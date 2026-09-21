@@ -1,0 +1,30 @@
+{
+  "_description": "Tableau IATA 9.3.A - Séparation entre colis (DGR 9.3.2). Une croix (x) dans le tableau signifie que les deux étiquettes de danger ne doivent pas être chargées l'une contre l'autre ni dans la même palette. Fichier éditable : modifier les listes ci-dessous met à jour l'application.",
+  "_source": "Présentation du projet A400M, illustration « Tableau de séparation des IATA » (IATA DGR tableau 9.3.A).",
+  "colonnes": ["1", "2.1", "2.2/2.3", "3", "4.1", "4.2", "4.3", "5.1", "5.2", "8", "9L"],
+  "incompatibilites": {
+    "1":       ["2.1", "2.2/2.3", "3", "4.1", "4.2", "4.3", "5.1", "5.2", "8", "9L"],
+    "2.1":     ["1", "9L"],
+    "2.2/2.3": ["1"],
+    "3":       ["1", "5.1", "9L"],
+    "4.1":     ["1", "9L"],
+    "4.2":     ["1", "5.1"],
+    "4.3":     ["1", "8"],
+    "5.1":     ["1", "3", "4.2", "9L"],
+    "5.2":     ["1"],
+    "8":       ["1", "4.3"],
+    "9L":      ["1", "2.1", "3", "4.1", "5.1"]
+  },
+  "notes": {
+    "1": "Entre colis de classe 1 : voir 9.3.2.2.5 (groupes de compatibilité des explosifs). L'application accepte deux colis de classe 1 sur la même palette mais signale un avertissement.",
+    "9L": "Classe 9 : seules les piles et batteries au lithium (9.3.2.1.3) sont soumises à séparation."
+  },
+  "correspondance_classes": {
+    "1": "1", "2.1": "2.1", "2.2": "2.2/2.3", "2.3": "2.2/2.3", "3": "3",
+    "4.1": "4.1", "4.2": "4.2", "4.3": "4.3", "5.1": "5.1", "5.2": "5.2",
+    "8": "8", "9L": "9L"
+  },
+  "autres_separations": [
+    {"a": "ARME", "b": "SECU", "motif": "Armement : l'arme et sa pièce de sécurité doivent voyager sur des palettes différentes."}
+  ]
+}

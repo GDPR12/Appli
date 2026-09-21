@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palettisation A400M</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='14' width='26' height='6' rx='1' fill='%23c98a3b'/%3E%3Crect x='6' y='6' width='9' height='8' fill='%234e79a7'/%3E%3Crect x='16' y='4' width='10' height='10' fill='%23e15759'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="barre">
+  <div class="titre">
+    <span class="logo">✈</span>
+    <div>
+      <div class="titre-principal">Palettisation A400M</div>
+      <div class="sous-titre">Confection des palettes 10k · ETAA</div>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="btn-exemple" class="secondaire" title="Charger un jeu de colis d'exemple">Exemple</button>
+    <button id="btn-importer" class="secondaire" title="Importer une liste de colis (CSV MEAT/SILRIA ou projet JSON)">Importer…</button>
+    <input type="file" id="fichier-import" accept=".csv,.txt,.json" hidden>
+    <button id="btn-enregistrer" class="secondaire" title="Enregistrer la liste de colis et les paramètres (JSON)">Enregistrer</button>
+    <button id="btn-parametres" class="secondaire" title="Paramètres de l'avion, des palettes et des règles">⚙ Paramètres</button>
+    <button id="btn-optimiser" class="primaire" title="Calculer la répartition des colis sur les palettes">▶ Confectionner les palettes</button>
+  </div>
+</header>
+
+<main class="disposition">
+
+  <!-- ===================== Colonne gauche : saisie des colis ===================== -->
+  <aside class="panneau gauche">
+    <section class="carte">
+      <h2 id="titre-formulaire">Nouveau colis</h2>
+      <form id="formulaire-colis" autocomplete="off">
+        <div class="grille-2">
+          <label>Numéro du colis
+            <input type="text" id="f-numero" placeholder="ex. C-012" required>
+          </label>
+          <label>Masse (kg)
+            <input type="number" id="f-masse" min="0.1" step="0.1" placeholder="kg" required>
+          </label>
+        </div>
+        <div class="grille-3">
+          <label>Longueur (cm)<input type="number" id="f-longueur" min="1" step="0.5" required></label>
+          <label>Largeur (cm)<input type="number" id="f-largeur" min="1" step="0.5" required></label>
+          <label>Hauteur (cm)<input type="number" id="f-hauteur" min="1" step="0.5" required></label>
+        </div>
+        <label>Colis spécial
+          <select id="f-classe"></select>
+        </label>
+        <div class="grille-3 cases">
+          <label class="case"><input type="checkbox" id="f-renversable" checked> Renversable</label>
+          <label class="case"><input type="checkbox" id="f-fragile"> Fragile</label>
+          <label>Quantité<input type="number" id="f-quantite" min="1" step="1" value="1"></label>
+        </div>
+        <label>Commentaire
+          <input type="text" id="f-commentaire" placeholder="Contenu, remarque… (facultatif)">
+        </label>
+        <p class="aide" id="aide-classe"></p>
+        <div class="boutons-formulaire">
+          <button type="submit" id="btn-ajouter" class="primaire">＋ Ajouter le colis</button>
+          <button type="button" id="btn-annuler-edition" class="secondaire" hidden>Annuler</button>
+        </div>
+        <p class="erreur" id="erreur-formulaire" hidden></p>
+      </form>
+    </section>
+
+    <section class="carte liste">
+      <div class="entete-liste">
+        <h2>Colis à palettiser <span class="badge" id="compteur-colis">0</span></h2>
+        <div>
+          <button id="btn-exporter-colis" class="lien" title="Exporter la liste en CSV">CSV</button>
+          <button id="btn-vider" class="lien danger" title="Supprimer tous les colis">Tout effacer</button>
+        </div>
+      </div>
+      <div class="table-defilante">
+        <table id="table-colis">
+          <thead>
+            <tr>
+              <th>N°</th><th>L × l × h (cm)</th><th>kg</th><th>Sens</th><th>Classe</th><th>Palette</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p class="vide" id="liste-vide">Aucun colis. Ajoutez des colis avec le formulaire, importez un fichier CSV ou chargez l'exemple.</p>
+      </div>
+      <p class="aide">Masse totale : <strong id="masse-totale">0 kg</strong> · Volume : <strong id="volume-total">0 m³</strong></p>
+    </section>
+  </aside>
+
+  <!-- ===================== Centre : vue 3D ===================== -->
+  <section class="centre">
+    <div class="onglets" id="onglets">
+      <button class="onglet actif" data-palette="ensemble">Vue d'ensemble</button>
+    </div>
+    <div class="barre-vue">
+      <div class="groupe" role="group" aria-label="Mode de couleur">
+        <button class="mode actif" data-mode="categories" title="Colis ordinaires en gris, colis spéciaux colorés par classe">Catégories</button>
+        <button class="mode" data-mode="carte_speciaux" title="Colis spéciaux voisins de couleurs différentes (coloriage de carte)">Carte spéciaux</button>
+        <button class="mode" data-mode="carte_tous" title="Tous les colis : deux voisins n'ont jamais la même couleur">Carte tous</button>
+        <button class="mode" data-mode="poids" title="Heat map : couleur selon la masse">Heat map poids</button>
+      </div>
+      <div class="groupe">
+        <label class="case"><input type="checkbox" id="opt-etiquettes" checked> Numéros</label>
+        <label class="case" title="Rendre les colis translucides pour voir l'intérieur">Transparence <input type="range" id="opt-opacite" min="20" max="100" value="100"></label>
+        <button id="btn-camera" class="secondaire petit" title="Recentrer la caméra">⟲ Vue</button>
+        <button id="btn-dessus" class="secondaire petit" title="Vue de dessus">Dessus</button>
+      </div>
+    </div>
+    <div id="vue3d">
+      <div class="message-vue" id="message-vue">
+        <p><strong>Aucune palette calculée.</strong></p>
+        <p>Saisissez vos colis puis cliquez sur « Confectionner les palettes ».</p>
+        <p class="aide">Rotation : clic gauche · Zoom : molette · Déplacement : clic droit · Clic sur un colis : détails</p>
+      </div>
+      <div class="chargement" id="chargement" hidden><div class="spinner"></div><p>Calcul en cours…</p></div>
+    </div>
+    <div class="legende" id="legende"></div>
+  </section>
+
+  <!-- ===================== Colonne droite : résultats ===================== -->
+  <aside class="panneau droite">
+    <section class="carte" id="bilan">
+      <h2>Bilan</h2>
+      <div class="grille-bilan" id="grille-bilan"><p class="vide">Lancez un calcul pour obtenir le bilan.</p></div>
+      <div class="boutons-export" id="boutons-export" hidden>
+        <button class="secondaire petit" id="btn-plan-csv" title="Plan de chargement : une ligne par colis avec sa palette et sa position">Plan CSV</button>
+        <button class="secondaire petit" id="btn-plan-json">Plan JSON</button>
+        <button class="secondaire petit" id="btn-fiche" title="Fiche palette imprimable">Fiche palette</button>
+      </div>
+      <p class="aide" id="info-export" hidden></p>
+    </section>
+
+    <section class="carte" id="palette-info">
+      <h2>Palette</h2>
+      <div id="contenu-palette"><p class="vide">Sélectionnez une palette dans les onglets.</p></div>
+    </section>
+
+    <section class="carte" id="colis-info">
+      <h2>Colis sélectionné</h2>
+      <div id="contenu-colis"><p class="vide">Cliquez sur un colis dans la vue 3D ou dans la liste.</p></div>
+    </section>
+
+    <section class="carte" id="messages">
+      <h2>Vérification <span class="badge" id="compteur-messages">0</span></h2>
+      <ul id="liste-messages"><li class="vide">Aucun message.</li></ul>
+    </section>
+  </aside>
+</main>
+
+<!-- ===================== Paramètres ===================== -->
+<dialog id="dlg-parametres">
+  <form method="dialog" id="form-parametres">
+    <h2>Paramètres</h2>
+    <div class="colonnes-params">
+      <fieldset>
+        <legend>Palette 10k</legend>
+        <label>Largeur côté couloir (cm)<input type="number" data-param="largeur_palette" step="1"></label>
+        <label>Longueur (cm)<input type="number" data-param="longueur_palette" step="1"></label>
+        <label>Réduction côté couloir, par côté (cm)<input type="number" data-param="reduction_couloir" step="1"></label>
+        <label class="case"><input type="checkbox" data-param="derogation_couloir"> Dérogation : utiliser toute la largeur (2,74 m)</label>
+        <label>Hauteur maximale (cm)<input type="number" data-param="hauteur_max" step="1"></label>
+        <label>Masse brute max en soute (kg)<input type="number" data-param="masse_max_soute" step="1"></label>
+        <label>Masse brute max sur la rampe (kg)<input type="number" data-param="masse_max_rampe" step="1"></label>
+        <label>Hauteur max sur la rampe (cm)<input type="number" data-param="hauteur_max_rampe" step="1"></label>
+        <label>Masse à vide d'une palette (kg)<input type="number" data-param="tare_palette" step="1"></label>
+        <label class="case"><input type="checkbox" data-param="autoriser_bipal"> Autoriser les BIPAL (2 palettes accouplées)</label>
+        <label class="case"><input type="checkbox" data-param="autoriser_tripal"> Autoriser les TRIPAL (3 palettes accouplées)</label>
+      </fieldset>
+      <fieldset>
+        <legend>Avion</legend>
+        <label>Nombre de passagers<input type="number" data-param="passagers" step="1" min="0"></label>
+        <p class="aide" id="aide-passagers"></p>
+        <label>Emplacements en soute<input type="number" data-param="positions_soute" step="1" min="0"></label>
+        <label>Emplacements sur la rampe<input type="number" data-param="positions_rampe" step="1" min="0"></label>
+        <label>Masse forfaitaire par passager (kg)<input type="number" data-param="masse_passager" step="1"></label>
+        <label>Bagages par passager (kg)<input type="number" data-param="masse_bagages" step="1"></label>
+        <label>Capacité indicative de l'avion (kg)<input type="number" data-param="capacite_avion" step="100"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Règles de confection</legend>
+        <label>Support minimal de la base (%)<input type="number" data-param="support_minimal" data-pourcent="1" step="5" min="10" max="100"></label>
+        <label title="1,0 = un colis ne peut être posé que sur des colis au moins aussi lourds que lui">Facteur masse dessus / dessous<input type="number" data-param="facteur_masse" step="0.1" min="0.1"></label>
+        <label class="case"><input type="checkbox" data-param="iata_au_bord"> Colis IATA contre une face côté couloir</label>
+        <label>Tolérance de contact (cm)<input type="number" data-param="jeu_contact" step="0.1" min="0"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Calcul</legend>
+        <label>Moteur<select data-param="moteur" id="select-moteur"></select></label>
+        <p class="aide" id="aide-moteur"></p>
+        <label>Durée de recherche (s)<input type="number" data-param="duree_recherche" step="1" min="1" max="600"></label>
+        <label>Graine aléatoire<input type="number" data-param="graine" step="1" min="0"></label>
+      </fieldset>
+    </div>
+    <div class="boutons-dialogue">
+      <button type="button" class="lien" id="btn-params-defaut">Rétablir les valeurs par défaut</button>
+      <span class="espace"></span>
+      <button type="button" class="secondaire" id="btn-params-annuler">Annuler</button>
+      <button type="submit" class="primaire" id="btn-params-ok">Enregistrer</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ===================== Fiche palette imprimable ===================== -->
+<dialog id="dlg-fiche">
+  <div class="fiche" id="contenu-fiche"></div>
+  <div class="boutons-dialogue non-imprimable">
+    <button type="button" class="secondaire" id="btn-fiche-fermer">Fermer</button>
+    <button type="button" class="primaire" id="btn-fiche-imprimer">🖨 Imprimer</button>
+  </div>
+</dialog>
+
+<div id="notification" class="notification" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

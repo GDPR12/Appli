@@ -1,0 +1,14 @@
+# Dépendances de l'application (Python 3.10 ou plus récent).
+# Le cœur (algorithme, serveur, interface) n'utilise que la bibliothèque standard.
+
+# Fenêtre native Windows (WebView2 / Edge). Sans ce paquet, l'application
+# s'ouvre dans le navigateur par défaut.
+pywebview>=5.0
+
+# Facultatif : moteur exact (programme linéaire en nombres entiers, notebook CDP).
+# pyscipopt>=5.0
+
+# Développement / tests
+# pytest>=8.0
+# playwright>=1.45
+# pyinstaller>=6.0
