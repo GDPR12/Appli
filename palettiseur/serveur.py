@@ -17,7 +17,7 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__, api, fichiers
 from .ressources import dossier_exports, dossier_interface
@@ -75,11 +75,13 @@ class Gestionnaire(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ GET
     def do_GET(self) -> None:  # noqa: N802
-        chemin = unquote(urlparse(self.path).path)
+        url = urlparse(self.path)
+        chemin = unquote(url.path)
         if chemin == "/api/config":
             return self._json(api.configuration())
         if chemin == "/api/exemple":
-            return self._json({"colis": api.exemple()})
+            nom = parse_qs(url.query).get("nom", ["iata"])[0]
+            return self._json(api.exemple(nom))
         if chemin.startswith("/exports/"):
             cible = (self.exports / self._securiser(chemin[len("/exports/"):])).resolve()
             if self.exports.resolve() not in cible.parents:

@@ -255,7 +255,8 @@ class Parametres:
     jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
 
     # Algorithme
-    duree_recherche: float = 3.0         # secondes de recherche multi-départ
+    duree_recherche: float = 4.0         # secondes, budget total de l'heuristique (phases 1, 3 et 5)
+    temps_limite_scip: float = 60.0      # secondes par étape SCIP (notebook : temps_limite)
     graine: int = 0
     moteur: str = "heuristique"          # "heuristique" ou "scip"
 
@@ -322,6 +323,16 @@ class Parametres:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class Etape:
+    """État intermédiaire du plan (phase 1 heuristique, phase 2 SCIP, solution finale)."""
+
+    cle: str                  # "heuristique", "scip" ou "finale"
+    titre: str
+    description: str
+    palettes: list[Palette]
+
+
+@dataclass
 class Resultat:
     palettes: list[Palette]
     non_places: list[tuple[Colis, str]]   # (colis, raison)
@@ -330,6 +341,8 @@ class Resultat:
     iterations: int = 0
     moteur: str = "heuristique"
     statut: str = "ok"
+    etapes: list[Etape] = field(default_factory=list)   # états successifs du pipeline
+    journal: list[dict] = field(default_factory=list)   # une entrée par phase (durée, texte, bilan)
 
     @property
     def positions_utilisees(self) -> int:

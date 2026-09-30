@@ -1,22 +1,23 @@
-"""Moteur exact : programme linéaire en nombres entiers résolu par SCIP.
+"""Phases SCIP du pipeline : port des cellules 4 à 15 du notebook ``CDP_1``.
 
-Adaptation du modèle du notebook ``CDP.ipynb`` (placement géométrique 3D,
-support à 90 %, cohésion du chargement, objectifs hiérarchisés : nombre de
-palettes, hauteurs, recentrage, compacité) avec les contraintes du projet
-qui manquaient au notebook :
+- **Phase 2** : le placement heuristique sert d'amorce (*warm start*) ; SCIP le valide puis cherche
+  à réduire le nombre d'emplacements de palette (recherche progressive : cible = courant − 1, puis −2…).
+- **Phase 5** : une fois les colis affectés, chaque palette devient indépendante et un petit modèle
+  SCIP minimise sa hauteur en partant de son placement actuel.
 
-- séparation IATA (tableau 9.3.A) et armement : deux colis incompatibles ne
-  partagent jamais une palette ;
-- règle « jamais un colis lourd sur un colis plus léger » : le contact de
-  support est interdit si m_i > facteur x m_j ;
-- colis fragiles : aucun colis ne peut reposer dessus ;
-- colis IATA contre une face côté couloir (x = ±L/2) ;
-- palettes BIPAL/TRIPAL candidates pour les colis trop longs, objectif
-  pondéré par le nombre d'emplacements occupés.
+Le modèle est celui du notebook (affectation, orientations, capacité, non-chevauchement par
+indicateurs, support à 90 % par aires de contact, hauteurs), auquel s'ajoutent les règles du projet :
 
-Le modèle est exact mais combinatoire : il est réservé aux petites listes
-(≈ 10 colis). Unités internes : mètres et kilogrammes (comme le notebook) ;
-la conversion depuis les centimètres de l'application est faite ici.
+- séparation IATA (tableau 9.3.A) et armement : ``a[i,p] + a[j,p] ≤ 1`` pour les paires incompatibles ;
+- aucun colis lourd sur un colis plus léger, rien sur un colis fragile : contact de support interdit ;
+- colis IATA contre une face côté couloir (seulement pour les colis déjà à cette place dans l'amorce,
+  sinon le modèle ne pourrait pas reconnaître l'amorce) ;
+- palettes candidates : celles de la solution heuristique (10k, BIPAL, TRIPAL, rampe) ;
+  objectif = nombre d'emplacements occupés.
+
+Conventions du notebook : mètres et kilogrammes, origine au centre de la surface de la palette,
+``(x, y, z)`` = centre du colis. Toute solution SCIP est contrôlée par ``_charge_valide`` avant d'être
+acceptée ; en cas d'échec, la solution précédente est conservée (le notebook abandonnait).
 PySCIPOpt est importé paresseusement : l'application fonctionne sans lui.
 """
 
@@ -25,114 +26,135 @@ from __future__ import annotations
 from itertools import combinations, permutations
 from time import perf_counter
 
-from .geometrie import tient_dans
-from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
-from .modeles import Colis, Palette, Parametres, Placement, Resultat, TypePalette
+from .geometrie import orientations as orientations_cm
+from .iata import ReglesSeparation, regles as regles_par_defaut
+from .modeles import Colis, Parametres, Resultat
+from .optimisation import TOL, _Boite, _Chargement, _charge_valide, _au_bord
 
 
 def disponible() -> tuple[bool, str]:
     try:
-        import pyscipopt  # noqa: F401
+        import pyscipopt
         return True, f"PySCIPOpt {getattr(pyscipopt, '__version__', '')}".strip()
     except ImportError:
         return False, "pip install pyscipopt"
 
 
 # ---------------------------------------------------------------------------
-# Construction du modèle
+# Données du modèle (mètres, kilogrammes)
 # ---------------------------------------------------------------------------
 
-def _candidats_palettes(colis: list[Colis], params: Parametres) -> list[TypePalette]:
-    """Palettes candidates : autant de 10k que d'emplacements, plus les BIPAL/TRIPAL nécessaires."""
-    types = params.types_palettes()
-    candidats: list[TypePalette] = []
-    for c in colis:
-        for t in types:
-            if c.masse <= t.masse_max and tient_dans(c, t.largeur, t.longueur, t.hauteur_max):
-                if t.positions > 1:
-                    candidats.append(t)
-                break
-    nb_simples = max(1, min(len(colis), params.positions_soute + params.positions_rampe) - sum(t.positions for t in candidats))
-    candidats.extend([types[0]] * nb_simples)
-    return candidats
+def _colis_modele(colis_liste: list[Colis]) -> list[dict]:
+    return [{"id": i, "obj": c, "m": c.masse, "l": c.longueur / 100, "w": c.largeur / 100,
+             "h": c.hauteur / 100, "r": 0 if c.renversable else 1, "fragile": c.fragile, "classe": c.classe}
+            for i, c in enumerate(colis_liste)]
 
 
-def _creer_modele(colis: list[Colis], palettes: list[TypePalette], params: Parametres,
-                  regles: ReglesSeparation, afficher_logs: bool):
-    from pyscipopt import Model, quicksum
+def _palettes_modele(chs: list[_Chargement]) -> list[dict]:
+    return [{"id": p, "M": ch.type.masse_max, "L": ch.type.largeur / 100, "W": ch.type.longueur / 100,
+             "H": ch.type.hauteur_max / 100, "positions": ch.type.positions} for p, ch in enumerate(chs)]
 
-    n, P = len(colis), range(len(palettes))
-    I = range(n)
-    modele = Model("Palettisation_A400M")
+
+# ---------------------------------------------------------------------------
+# Modèle (cellules 6 à 12 du notebook)
+# ---------------------------------------------------------------------------
+
+def creer_modele(colis, palettes, temps_limite, afficher_logs=False):
+    from pyscipopt import Model
+    I, P = range(len(colis)), range(len(palettes))
+    modele = Model("Palettisation_3D")
     modele.setBoolParam("nlp/disable", True)
-    modele.setRealParam("limits/time", float(params.duree_recherche))
+    modele.setRealParam("limits/time", float(temps_limite))
     if not afficher_logs:
         modele.hideOutput()
-
-    # Dimensions en mètres
-    dims_pal = [(t.largeur / 100, t.longueur / 100, t.hauteur_max / 100, t.masse_max) for t in palettes]
-    Lmax = max(d[0] for d in dims_pal)
-    Wmax = max(d[1] for d in dims_pal)
-    Hmax = max(d[2] for d in dims_pal)
-
     a = {(i, p): modele.addVar(vtype="B", name=f"a_{i}_{p}") for i in I for p in P}
     u = {p: modele.addVar(vtype="B", name=f"u_{p}") for p in P}
+    Lmax, Wmax, Hmax = (max(p[k] for p in palettes) for k in ("L", "W", "H"))
     x = {i: modele.addVar(lb=-Lmax / 2, ub=Lmax / 2, name=f"x_{i}") for i in I}
     y = {i: modele.addVar(lb=-Wmax / 2, ub=Wmax / 2, name=f"y_{i}") for i in I}
     z = {i: modele.addVar(lb=0, ub=Hmax, name=f"z_{i}") for i in I}
+    return {"modele": modele, "colis": colis, "palettes": palettes, "I": I, "P": P,
+            "a": a, "u": u, "x": x, "y": y, "z": z}
 
-    # Orientations et dimensions orientées
+
+def ajouter_affectation_et_orientations(c):
+    from pyscipopt import quicksum
+    modele, colis, I, P, a = c["modele"], c["colis"], c["I"], c["P"], c["a"]
     orientations, b, dimensions = {}, {}, {}
-    for i, c in enumerate(colis):
-        l, w, h = c.longueur / 100, c.largeur / 100, c.hauteur / 100
-        choix = list(permutations((l, w, h))) if c.renversable else [(l, w, h), (w, l, h)]
+    for i, ci in enumerate(colis):
+        l, w, h = ci["l"], ci["w"], ci["h"]
+        choix = [(l, w, h), (w, l, h)] if ci["r"] == 1 else list(permutations((l, w, h)))
         orientations[i] = list(dict.fromkeys(choix))
         for o in range(len(orientations[i])):
             b[i, o] = modele.addVar(vtype="B", name=f"b_{i}_{o}")
         modele.addCons(quicksum(b[i, o] for o in range(len(orientations[i]))) == 1)
         dimensions[i] = tuple(quicksum(d[k] * b[i, o] for o, d in enumerate(orientations[i])) for k in range(3))
         modele.addCons(quicksum(a[i, p] for p in P) == 1)
+    c.update(orientations=orientations, b=b, dimensions=dimensions)
 
-    # Capacité, maintien dans la palette
-    for p, (L, W, H, M) in enumerate(dims_pal):
-        modele.addCons(quicksum(colis[i].masse * a[i, p] for i in I) <= M * u[p])
+
+def ajouter_capacite_et_limites(c):
+    from pyscipopt import quicksum
+    modele, colis, palettes = c["modele"], c["colis"], c["palettes"]
+    I, P, a, u = c["I"], c["P"], c["a"], c["u"]
+    x, y, z, dimensions = c["x"], c["y"], c["z"], c["dimensions"]
+    for p, pal in enumerate(palettes):
+        modele.addCons(quicksum(colis[i]["m"] * a[i, p] for i in I) <= pal["M"] * u[p])
+        modele.addCons(quicksum(colis[i]["l"] * colis[i]["w"] * colis[i]["h"] * a[i, p] for i in I)
+                       <= pal["L"] * pal["W"] * pal["H"] * u[p])
         modele.addCons(u[p] <= quicksum(a[i, p] for i in I))
         for i in I:
             modele.addCons(a[i, p] <= u[p])
             li, wi, hi = dimensions[i]
-            for contrainte in (x[i] + li / 2 <= L / 2, -x[i] + li / 2 <= L / 2,
-                               y[i] + wi / 2 <= W / 2, -y[i] + wi / 2 <= W / 2,
-                               z[i] + hi / 2 <= H, -z[i] + hi / 2 <= 0):
+            for contrainte in (x[i] + li / 2 <= pal["L"] / 2, -x[i] + li / 2 <= pal["L"] / 2,
+                               y[i] + wi / 2 <= pal["W"] / 2, -y[i] + wi / 2 <= pal["W"] / 2,
+                               z[i] + hi / 2 <= pal["H"], -z[i] + hi / 2 <= 0):
                 modele.addConsIndicator(contrainte, binvar=a[i, p])
 
-    # Symétries entre palettes identiques
-    groupes: dict[tuple, list[int]] = {}
-    for p, d in enumerate(dims_pal):
-        groupes.setdefault(d, []).append(p)
-    for indices in groupes.values():
-        for prec, suiv in zip(indices, indices[1:]):
-            modele.addCons(u[prec] >= u[suiv])
 
-    # Séparation IATA / armement (nouveau)
+def ajouter_reduction_symetries(c):
+    """Palettes identiques interchangeables : on les utilise dans l'ordre (aucune solution perdue)."""
+    modele, palettes, u = c["modele"], c["palettes"], c["u"]
+    groupes: dict[tuple, list[int]] = {}
+    for p, pal in enumerate(palettes):
+        groupes.setdefault((pal["M"], pal["L"], pal["W"], pal["H"]), []).append(p)
+    for indices in groupes.values():
+        for precedente, suivante in zip(indices, indices[1:]):
+            modele.addCons(u[precedente] >= u[suivante])
+
+
+def ajouter_separation_iata(c, regles: ReglesSeparation):
+    """Règle du projet : deux colis incompatibles (IATA 9.3.A, armement) ne partagent jamais une palette."""
+    modele, colis, I, P, a = c["modele"], c["colis"], c["I"], c["P"], c["a"]
     for i, j in combinations(I, 2):
-        if regles.motif_incompatibilite(colis[i].classe, colis[j].classe):
+        if regles.motif_incompatibilite(colis[i]["classe"], colis[j]["classe"]):
             for p in P:
                 modele.addCons(a[i, p] + a[j, p] <= 1)
 
-    # Non-chevauchement
+
+def ajouter_non_chevauchement(c):
+    from pyscipopt import quicksum
+    modele, I, P, a = c["modele"], c["I"], c["P"], c["a"]
+    x, y, z, dimensions = c["x"], c["y"], c["z"], c["dimensions"]
     for i, j in combinations(I, 2):
         separations = []
         for k, coord in enumerate((x, y, z)):
-            demi = (dimensions[i][k] + dimensions[j][k]) / 2
+            demi_somme = (dimensions[i][k] + dimensions[j][k]) / 2
             for premier, second in ((i, j), (j, i)):
                 s = modele.addVar(vtype="B", name=f"s_{premier}_{second}_{k}")
-                modele.addConsIndicator(coord[premier] + demi <= coord[second], binvar=s)
+                modele.addConsIndicator(coord[premier] + demi_somme <= coord[second], binvar=s)
                 separations.append(s)
         for p in P:
             modele.addCons(quicksum(separations) >= a[i, p] + a[j, p] - 1)
 
-    # Support minimal (gravité) + règle de masse + fragilité (nouveau)
-    contacts_support = {}
+
+def ajouter_support_minimal(c, params: Parametres):
+    """Gravité : support minimal de la base ; contact interdit sous un colis plus léger ou fragile."""
+    from pyscipopt import quicksum
+    modele, colis, I, P, a = c["modele"], c["colis"], c["I"], c["P"], c["a"]
+    x, y, z = c["x"], c["y"], c["z"]
+    orientations, b, dimensions = c["orientations"], c["b"], c["dimensions"]
+    s_min = params.support_minimal
     for i in I:
         li, wi, hi = dimensions[i]
         sol_i = modele.addVar(vtype="B", name=f"au_sol_{i}")
@@ -144,9 +166,8 @@ def _creer_modele(colis: list[Colis], palettes: list[TypePalette], params: Param
             if i == j:
                 continue
             lj, wj, hj = dimensions[j]
-            contact = modele.addVar(vtype="B", name=f"contact_{i}_{j}")  # i repose sur j
-            contacts_support[i, j] = contact
-            if colis[j].fragile or colis[i].masse > params.facteur_masse * colis[j].masse + 1e-9:
+            contact = modele.addVar(vtype="B", name=f"contact_{i}_{j}")      # i repose sur j
+            if colis[j]["fragile"] or colis[i]["m"] > params.facteur_masse * colis[j]["m"] + 1e-9:
                 modele.addCons(contact <= 0)
             modele.addCons(contact + sol_i <= 1)
             for p in P:
@@ -169,180 +190,359 @@ def _creer_modele(colis: list[Colis], palettes: list[TypePalette], params: Param
             aire = modele.addVar(lb=0, ub=base_max, name=f"aire_contact_{i}_{j}")
             modele.addCons(aire <= largeurs[0] * largeurs[1])
             aires.append(aire)
-        s = params.support_minimal
-        modele.addCons(quicksum(aires) >= s * base_i - s * base_max * sol_i)
+        modele.addCons(quicksum(aires) >= s_min * base_i - s_min * base_max * sol_i)
 
-    # Colis IATA contre une face côté couloir (nouveau)
-    if params.iata_au_bord:
-        jeu = params.jeu_contact / 100
-        for i in I:
-            if not classe_de(colis[i].classe).iata:
-                continue
-            gauche = modele.addVar(vtype="B", name=f"bord_gauche_{i}")
-            droite = modele.addVar(vtype="B", name=f"bord_droit_{i}")
-            modele.addCons(gauche + droite >= 1)
-            li = dimensions[i][0]
-            for p, (L, W, H, M) in enumerate(dims_pal):
-                # si le colis est sur la palette p et gauche = 1 : x - l/2 <= -L/2 + jeu
-                g_p = modele.addVar(vtype="B", name=f"bord_gauche_{i}_{p}")
-                d_p = modele.addVar(vtype="B", name=f"bord_droit_{i}_{p}")
-                modele.addCons(g_p >= gauche + a[i, p] - 1)
-                modele.addCons(d_p >= droite + a[i, p] - 1)
-                modele.addConsIndicator(x[i] - li / 2 <= -L / 2 + jeu, binvar=g_p)
-                modele.addConsIndicator(-x[i] - li / 2 <= -L / 2 + jeu, binvar=d_p)
 
-    # Hauteurs utilisées
-    T = {p: modele.addVar(lb=0, ub=dims_pal[p][2], name=f"T_{p}") for p in P}
+def ajouter_bord_couloir(c, params: Parametres, requis: set[int]):
+    """Colis IATA ``requis`` : contre la face x = −L/2 ou x = +L/2 de sa palette."""
+    modele, I, P, a = c["modele"], c["I"], c["P"], c["a"]
+    x, dimensions = c["x"], c["dimensions"]
+    jeu = params.jeu_contact / 100
+    for i in requis:
+        li = dimensions[i][0]
+        for p in P:
+            L = c["palettes"][p]["L"]
+            g = modele.addVar(vtype="B", name=f"bord_g_{i}_{p}")
+            d = modele.addVar(vtype="B", name=f"bord_d_{i}_{p}")
+            modele.addCons(g + d >= a[i, p])
+            modele.addConsIndicator(x[i] - li / 2 <= -L / 2 + jeu, binvar=g)
+            modele.addConsIndicator(-x[i] - li / 2 <= -L / 2 + jeu, binvar=d)
+
+
+def ajouter_hauteurs(c):
+    modele, palettes, I, P = c["modele"], c["palettes"], c["I"], c["P"]
+    a, u, z, dimensions = c["a"], c["u"], c["z"], c["dimensions"]
+    T = {p: modele.addVar(lb=0, ub=palettes[p]["H"], name=f"T_{p}") for p in P}
     for p in P:
-        modele.addCons(T[p] <= dims_pal[p][2] * u[p])
+        modele.addCons(T[p] <= palettes[p]["H"] * u[p])
         for i in I:
             modele.addConsIndicator(z[i] + dimensions[i][2] / 2 <= T[p], binvar=a[i, p])
+    c["T"] = T
 
-    # Recentrage et compacité (linéarisation du produit a[i,p] * x[i])
-    ecarts_centre, distances = [], []
-    for p, (L, W, H, M) in enumerate(dims_pal):
-        bx, by = L / 2, W / 2
-        xs, ys = {}, {}
-        for i in I:
-            xs[i] = modele.addVar(lb=-bx, ub=bx, name=f"x_sur_palette_{i}_{p}")
-            ys[i] = modele.addVar(lb=-by, ub=by, name=f"y_sur_palette_{i}_{p}")
-            modele.addCons(xs[i] <= x[i] + Lmax / 2 * (1 - a[i, p]))
-            modele.addCons(xs[i] >= x[i] - Lmax / 2 * (1 - a[i, p]))
-            modele.addCons(xs[i] <= bx * a[i, p])
-            modele.addCons(xs[i] >= -bx * a[i, p])
-            modele.addCons(ys[i] <= y[i] + Wmax / 2 * (1 - a[i, p]))
-            modele.addCons(ys[i] >= y[i] - Wmax / 2 * (1 - a[i, p]))
-            modele.addCons(ys[i] <= by * a[i, p])
-            modele.addCons(ys[i] >= -by * a[i, p])
-            dxv = modele.addVar(lb=0, ub=bx, name=f"distance_x_{i}_{p}")
-            dyv = modele.addVar(lb=0, ub=by, name=f"distance_y_{i}_{p}")
-            modele.addCons(dxv >= xs[i]); modele.addCons(dxv >= -xs[i])
-            modele.addCons(dyv >= ys[i]); modele.addCons(dyv >= -ys[i])
-            modele.addCons(dxv <= bx * a[i, p]); modele.addCons(dyv <= by * a[i, p])
-            distances.append(dxv / bx + dyv / by)
-        mx = quicksum(colis[i].masse * xs[i] for i in I)
-        my = quicksum(colis[i].masse * ys[i] for i in I)
-        ex = modele.addVar(lb=0, name=f"ecart_centre_x_{p}")
-        ey = modele.addVar(lb=0, name=f"ecart_centre_y_{p}")
-        modele.addCons(ex >= mx); modele.addCons(ex >= -mx)
-        modele.addCons(ey >= my); modele.addCons(ey >= -my)
-        ecarts_centre.append(ex / (M * bx)); ecarts_centre.append(ey / (M * by))
 
-    return {"modele": modele, "quicksum": quicksum, "I": I, "P": P, "a": a, "u": u, "x": x, "y": y, "z": z,
-            "b": b, "orientations": orientations, "T": T, "dims_pal": dims_pal,
-            "objectif_recentrage": quicksum(ecarts_centre), "objectif_compacite": quicksum(distances)}
+def _construire_modele(chs, colis_liste, params, regles, temps_limite, requis_bord):
+    colis, palettes = _colis_modele(colis_liste), _palettes_modele(chs)
+    c = creer_modele(colis, palettes, temps_limite)
+    ajouter_affectation_et_orientations(c)
+    ajouter_reduction_symetries(c)
+    ajouter_capacite_et_limites(c)
+    ajouter_separation_iata(c, regles)
+    ajouter_non_chevauchement(c)
+    ajouter_support_minimal(c, params)
+    if requis_bord:
+        ajouter_bord_couloir(c, params, requis_bord)
+    ajouter_hauteurs(c)
+    return c
 
 
 # ---------------------------------------------------------------------------
-# Résolution hiérarchique (nombre d'emplacements > hauteurs > recentrage > compacité)
+# Conversions heuristique <-> modèle
 # ---------------------------------------------------------------------------
 
-def _memoriser(c, solution):
+def _centre_modele(b: _Boite, ch: _Chargement) -> tuple[float, float, float]:
+    """Centre du colis dans le repère du notebook (mètres, origine au centre de la palette)."""
+    t = ch.type
+    return ((b.x1 + b.x2 - t.largeur) / 200, (b.y1 + b.y2 - t.longueur) / 200, (b.z1 + b.z2) / 200)
+
+
+def _indice_orientation(c, i: int, b: _Boite) -> int:
+    cible = (b.dx / 100, b.dy / 100, b.dz / 100)
+    for o, d in enumerate(c["orientations"][i]):
+        if all(abs(d[k] - cible[k]) <= 1e-6 for k in range(3)):
+            return o
+    return b.orientation
+
+
+def _indices_colis(chs) -> tuple[list[Colis], dict[int, int]]:
+    """Liste des colis (ordre des palettes) et correspondance id(colis) -> indice."""
+    liste = [b.colis for ch in chs for b in ch.boites]
+    return liste, {id(colis): i for i, colis in enumerate(liste)}
+
+
+def ajouter_amorce_heuristique(c, chs, indice):
+    """Transmet à SCIP l'affectation, l'orientation et les coordonnées de l'heuristique (solution partielle)."""
+    modele = c["modele"]
+    solution = modele.createPartialSol()
+    for p, ch in enumerate(chs):
+        modele.setSolVal(solution, c["u"][p], 1.0)
+        for b in ch.boites:
+            i = indice[id(b.colis)]
+            for q in c["P"]:
+                modele.setSolVal(solution, c["a"][i, q], float(q == p))
+            x, y, z = _centre_modele(b, ch)
+            modele.setSolVal(solution, c["x"][i], x)
+            modele.setSolVal(solution, c["y"][i], y)
+            modele.setSolVal(solution, c["z"][i], z)
+            choix = _indice_orientation(c, i, b)
+            for o in range(len(c["orientations"][i])):
+                modele.setSolVal(solution, c["b"][i, o], float(o == choix))
+    return modele.addSol(solution)
+
+
+def contraindre_amorce_heuristique(c, chs, indice):
+    """Fixe brièvement le placement afin que SCIP complète lui-même ses variables auxiliaires."""
+    modele = c["modele"]
+    contraintes = []
+    for p, ch in enumerate(chs):
+        contraintes.append(modele.addCons(c["u"][p] == 1))
+        for b in ch.boites:
+            i = indice[id(b.colis)]
+            for q in c["P"]:
+                contraintes.append(modele.addCons(c["a"][i, q] == int(q == p)))
+            x, y, z = _centre_modele(b, ch)
+            contraintes.extend((modele.addCons(c["x"][i] == x), modele.addCons(c["y"][i] == y),
+                                modele.addCons(c["z"][i] == z)))
+            contraintes.append(modele.addCons(c["b"][i, _indice_orientation(c, i, b)] == 1))
+    return contraintes
+
+
+def memoriser_solution(c, solution):
     variables = c["modele"].getVars(transformed=False)
     return variables, {v.name: float(c["modele"].getSolVal(solution, v)) for v in variables}
 
 
-def _restaurer(modele, variables, sauvegarde):
+def restaurer_solution(modele, variables, sauvegarde):
     depart = modele.createSol()
     for v in variables:
         modele.setSolVal(depart, v, sauvegarde[v.name])
     modele.addSol(depart)
 
 
-def _etape(c, objectif, contrainte_precedente, etat, temps_limite):
-    modele = c["modele"]
-    if etat is not None:
-        modele.freeTransform()
-        if contrainte_precedente is not None:
-            modele.addCons(contrainte_precedente)
-    modele.setObjective(objectif, "minimize")
-    if etat is not None:
-        _restaurer(modele, etat["variables"], etat["sauvegarde"])
-        modele.setRealParam("limits/time", modele.getSolvingTime() + float(temps_limite))
-    modele.optimize()
-    statut = str(modele.getStatus())
-    if modele.getNSols() == 0:
-        return None, statut
-    solution = modele.getBestSol()
-    variables, sauvegarde = _memoriser(c, solution)
-    return {"variables": variables, "sauvegarde": sauvegarde, "statut": statut,
-            "valeur": float(modele.getSolObjVal(solution))}, statut
+def _extraire(c, sauvegarde, chs_modeles: list[_Chargement], colis_liste: list[Colis]) -> list[_Chargement]:
+    """Reconstruit les chargements (cm, coin minimal) depuis les valeurs SCIP sauvegardées."""
+    resultat = []
+    for p, ch in enumerate(chs_modeles):
+        if sauvegarde[c["u"][p].name] < 0.5:
+            continue
+        nouveau = _Chargement(ch.type, ch.zone)
+        for i, colis in enumerate(colis_liste):
+            if sauvegarde[c["a"][i, p].name] < 0.5:
+                continue
+            o = max(range(len(c["orientations"][i])), key=lambda o: sauvegarde[c["b"][i, o].name])
+            li, wi, hi = orientations_cm(colis)[o]      # dimensions exactes en cm (même ordre que le modèle)
+            t = ch.type
+            x1 = sauvegarde[c["x"][i].name] * 100 - li / 2 + t.largeur / 2
+            y1 = sauvegarde[c["y"][i].name] * 100 - wi / 2 + t.longueur / 2
+            z1 = sauvegarde[c["z"][i].name] * 100 - hi / 2
+            nouveau.boites.append(_Boite(colis, max(0.0, x1) if x1 > -TOL else x1,
+                                         max(0.0, y1) if y1 > -TOL else y1,
+                                         max(0.0, z1) if z1 > -TOL else z1, li, wi, hi, o))
+        if nouveau.boites:
+            resultat.append(nouveau)
+    return resultat
 
 
-def optimiser(colis: list[Colis], params: Parametres | None = None, regles: ReglesSeparation | None = None,
-              afficher_logs: bool = False) -> Resultat:
-    params = params or Parametres()
-    regles = regles or regles_par_defaut()
+# ---------------------------------------------------------------------------
+# Phase 2 : réduction progressive du nombre d'emplacements (cellule 13)
+# ---------------------------------------------------------------------------
+
+def reduire_nombre_palettes(chs: list[_Chargement], params: Parametres, regles: ReglesSeparation,
+                            temps_limite: float):
+    """Valide l'amorce heuristique puis tente d'utiliser moins d'emplacements.
+
+    Retourne (chargements, info). En cas d'échec de SCIP (amorce non validée, solution rejetée par le
+    contrôle indépendant), les chargements d'origine sont renvoyés tels quels.
+    """
+    from pyscipopt import quicksum
+    debut_global = perf_counter()
+    info: dict = {"historique": [], "statut": "", "texte": ""}
+    colis_liste, indice = _indices_colis(chs)
+    positions = [ch.type.positions for ch in chs]
+    maximum = sum(positions)
+
+    # Colis IATA déjà contre une face côté couloir dans l'amorce : la règle devient dure pour eux.
+    requis = set()
+    if params.iata_au_bord:
+        for ch in chs:
+            for b in ch.boites:
+                if b.iata and _au_bord(b.x1, b.x2, ch.type.largeur, params.jeu_contact):
+                    requis.add(indice[id(b.colis)])
+
     debut = perf_counter()
-    types = params.types_palettes()
-    non_places: list[tuple[Colis, str]] = []
-    valides: list[Colis] = []
-    for c in colis:
-        erreurs = c.valider()
-        if erreurs:
-            non_places.append((c, "saisie invalide : " + ", ".join(erreurs)))
-        elif not any(c.masse <= t.masse_max and tient_dans(c, t.largeur, t.longueur, t.hauteur_max) for t in types):
-            non_places.append((c, "ne tient sur aucun format de palette : à charger en vrac"))
-        else:
-            valides.append(c)
-    if not valides:
-        return Resultat([], non_places, params, perf_counter() - debut, 0, "scip", "vide")
+    c = _construire_modele(chs, colis_liste, params, regles, temps_limite, requis)
+    modele, P, u = c["modele"], c["P"], c["u"]
+    duree_modele = perf_counter() - debut
 
-    palettes = _candidats_palettes(valides, params)
-    c = _creer_modele(valides, palettes, params, regles, afficher_logs)
-    modele, qs, P, u, T = c["modele"], c["quicksum"], c["P"], c["u"], c["T"]
-    tol = 1e-6
-    statuts = []
+    def somme_positions():
+        return quicksum(positions[p] * u[p] for p in P)
 
-    # 1. Nombre d'emplacements occupés
-    etat, statut = _etape(c, qs(palettes[p].positions * u[p] for p in P), None, None, params.duree_recherche)
-    statuts.append(statut)
-    if etat is None:
-        return Resultat([], non_places + [(x, f"SCIP : aucune solution ({statut})") for x in valides], params,
-                        perf_counter() - debut, 1, "scip", statut)
-    fixe = round(etat["valeur"])
-    # 2. Somme des hauteurs
-    etat2, statut = _etape(c, qs(T[p] for p in P), qs(palettes[p].positions * u[p] for p in P) <= fixe + tol,
-                           etat, params.duree_recherche)
-    statuts.append(statut)
-    if etat2 is not None:
-        etat = etat2
-        # 3. Recentrage
-        etat3, statut = _etape(c, c["objectif_recentrage"], qs(T[p] for p in P) <= etat["valeur"] + tol, etat,
-                               params.duree_recherche)
-        statuts.append(statut)
-        if etat3 is not None:
-            etat = etat3
-            # 4. Compacité
-            etat4, statut = _etape(c, c["objectif_compacite"], c["objectif_recentrage"] <= etat["valeur"] + tol,
-                                   etat, params.duree_recherche)
-            statuts.append(statut)
-            if etat4 is not None:
-                etat = etat4
+    def regler_limite(duree):
+        modele.setRealParam("limits/time", modele.getSolvingTime() + max(0.1, duree))
 
-    # Extraction
-    sauvegarde = etat["sauvegarde"]
-    val = lambda v: sauvegarde[v.name]  # noqa: E731
-    resultat_palettes: list[Palette] = []
-    numero = 0
-    for p in P:
-        contenu = []
-        for i, colis_i in enumerate(valides):
-            if val(c["a"][i, p]) > 0.5:
-                o = max(range(len(c["orientations"][i])), key=lambda o: val(c["b"][i, o]))
-                dx, dy, dz = (d * 100 for d in c["orientations"][i][o])
-                L, W = palettes[p].largeur, palettes[p].longueur
-                contenu.append(Placement(colis_i, val(c["x"][i]) * 100 + L / 2 - dx / 2,
-                                         val(c["y"][i]) * 100 + W / 2 - dy / 2,
-                                         max(0.0, val(c["z"][i]) * 100 - dz / 2), dx, dy, dz, o))
-        if contenu:
-            numero += 1
-            pal = Palette(numero, palettes[p], contenu, "soute")
-            resultat_palettes.append(pal)
-    positions = 0
-    for pal in resultat_palettes:
-        positions += pal.type.positions
-        if positions > params.positions_soute and pal.type.positions == 1:
-            pal.zone = "rampe"
-    statut_global = "optimal" if all(s == "optimal" for s in statuts) else " / ".join(statuts)
-    return Resultat(resultat_palettes, non_places, params, perf_counter() - debut, len(statuts), "scip", statut_global)
+    def solution_respecte(cible):
+        if modele.getNSols() == 0:
+            return None
+        candidate = modele.getBestSol()
+        utilisees = sum(positions[p] * float(modele.getSolVal(candidate, u[p])) for p in P)
+        return candidate if utilisees <= cible + 0.5 else None
+
+    modele.setObjective(0.0, "minimize")
+    contraintes_initiales = [modele.addCons(somme_positions() <= maximum)]
+    amorce_acceptee = ajouter_amorce_heuristique(c, chs, indice)
+    contraintes_initiales.extend(contraindre_amorce_heuristique(c, chs, indice))
+    debut = perf_counter()
+    regler_limite(temps_limite)
+    modele.optimize()
+    duree = perf_counter() - debut
+    solution = solution_respecte(maximum)
+    statut = str(modele.getStatus())
+    info["historique"].append({"cible": maximum, "trouvee": solution is not None, "statut": statut,
+                               "duree": round(duree, 3), "noeuds": modele.getNNodes(), "validation_amorce": True})
+    info["verification_amorce"] = {"validee_par_scip": solution is not None, "statut_validation": statut,
+                                   "duree_validation": round(duree, 3), "partielle_enregistree": bool(amorce_acceptee),
+                                   "duree_modele": round(duree_modele, 3)}
+    if solution is None:
+        info["statut"] = statut
+        info["texte"] = (f"Amorce heuristique ({maximum} emplacement(s)) NON VALIDÉE par SCIP (statut {statut}, "
+                         f"{duree:.1f} s ; modèle construit en {duree_modele:.1f} s). La solution heuristique est conservée.")
+        return chs, info
+
+    variables, sauvegarde = memoriser_solution(c, solution)
+    nombre_fixe = maximum
+    modele.freeTransform()
+    for contrainte in contraintes_initiales:
+        modele.delCons(contrainte)
+    preuve = maximum == 1
+    dernier_statut = str(modele.getStatus())
+
+    # Chaque cible réussie devient la nouvelle solution de secours ; en cas d'échec ou de dépassement du
+    # temps, la contrainte de la cible est retirée et la solution précédente reste utilisable.
+    for cible in range(maximum - 1, 0, -1):
+        contrainte_cible = modele.addCons(somme_positions() <= cible)
+        debut = perf_counter()
+        regler_limite(temps_limite)
+        modele.optimize()
+        solution = solution_respecte(cible)
+        duree = perf_counter() - debut
+        dernier_statut = str(modele.getStatus())
+        info["historique"].append({"cible": cible, "trouvee": solution is not None, "statut": dernier_statut,
+                                   "duree": round(duree, 3), "noeuds": modele.getNNodes()})
+        if solution is not None:
+            variables, sauvegarde = memoriser_solution(c, solution)
+            nombre_fixe = cible
+            if cible == 1:
+                preuve = True
+                break
+            modele.freeTransform()
+            continue
+        if dernier_statut == "infeasible":
+            preuve = True           # aucune solution à "cible" emplacements : la précédente est minimale
+        modele.freeTransform()
+        modele.delCons(contrainte_cible)
+        break
+
+    nouveaux = _extraire(c, sauvegarde, chs, colis_liste)
+    # Contrôle indépendant : on n'accepte la solution SCIP que si chaque palette respecte toutes les règles.
+    if len(colis_liste) != sum(len(n.boites) for n in nouveaux) or not all(_charge_valide(n, params, regles) for n in nouveaux):
+        info["statut"] = "rejetée"
+        info["texte"] = ("La solution SCIP a été rejetée par le contrôle indépendant (tolérance numérique ou règle "
+                         "non modélisée) : la solution heuristique est conservée.")
+        return chs, info
+    info["statut"] = "optimal" if preuve else dernier_statut
+    essais = " ; ".join(f"≤ {e['cible']} emplacement(s) : {'solution' if e['trouvee'] else 'aucune solution'}, "
+                        f"{e['duree']:.1f} s, {e['noeuds']} nœuds, {e['statut']}" for e in info["historique"])
+    info["texte"] = (f"Amorce VALIDÉE ({maximum} emplacement(s), {info['verification_amorce']['duree_validation']:.1f} s). "
+                     f"Recherche progressive : {essais}. Résultat : {sum(n.type.positions for n in nouveaux)} emplacement(s), "
+                     + ("minimum prouvé." if preuve else "minimum non prouvé.")
+                     + f" Temps total de la phase : {perf_counter() - debut_global:.1f} s.")
+    return nouveaux, info
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 : hauteurs palette par palette (cellule 14)
+# ---------------------------------------------------------------------------
+
+def optimiser_hauteur_une_palette(ch: _Chargement, index: int, params: Parametres, regles: ReglesSeparation,
+                                  budget: float) -> dict:
+    """Minimise la hauteur d'une palette : amorce reconnue par SCIP, puis positions libres sous la hauteur connue."""
+    debut = perf_counter()
+    hauteur_depart = ch.hauteur / 100
+    bilan = {"palette": index, "colis": len(ch.boites), "avant": ch.hauteur, "apres": ch.hauteur,
+             "amorce_reconnue": False, "statut_amorce": "non lancée", "statut": "non lancée",
+             "noeuds": 0, "amelioree": False, "optimal": False}
+    if budget <= 0.1 or len(ch.boites) < 2:
+        bilan["duree"] = perf_counter() - debut
+        return bilan
+
+    colis_liste = [b.colis for b in ch.boites]
+    requis = set()
+    if params.iata_au_bord:
+        requis = {i for i, b in enumerate(ch.boites) if b.iata and _au_bord(b.x1, b.x2, ch.type.largeur, params.jeu_contact)}
+    c = _construire_modele([ch], colis_liste, params, regles, budget, requis)
+    modele = c["modele"]
+    # Première passe : positions et orientations de l'amorce fixées (2 mm de tolérance en x et y) ;
+    # SCIP complète lui-même les variables auxiliaires de support.
+    contraintes_depart = []
+    for i, b in enumerate(ch.boites):
+        x, y, z = _centre_modele(b, ch)
+        contraintes_depart.append(modele.addCons(c["x"][i] >= x - 0.002))
+        contraintes_depart.append(modele.addCons(c["x"][i] <= x + 0.002))
+        contraintes_depart.append(modele.addCons(c["y"][i] >= y - 0.002))
+        contraintes_depart.append(modele.addCons(c["y"][i] <= y + 0.002))
+        contraintes_depart.append(modele.addCons(c["z"][i] == z))
+        contraintes_depart.append(modele.addCons(c["b"][i, _indice_orientation(c, i, b)] == 1))
+    modele.setObjective(0.0, "minimize")
+    temps_amorce = min(5.0, max(0.1, budget * 0.20), max(0.1, budget - (perf_counter() - debut)))
+    modele.setRealParam("limits/time", modele.getSolvingTime() + temps_amorce)
+    modele.optimize()
+    bilan["statut_amorce"] = str(modele.getStatus())
+    variables = sauvegarde = None
+    if modele.getNSols() > 0:
+        variables, sauvegarde = memoriser_solution(c, modele.getBestSol())
+        sauvegarde[c["T"][0].name] = hauteur_depart
+        bilan["amorce_reconnue"] = True
+    modele.freeTransform()
+    for contrainte in contraintes_depart:
+        modele.delCons(contrainte)
+
+    # Deuxième passe : positions libres, mais jamais plus haut que le placement déjà connu.
+    modele.addCons(c["T"][0] <= hauteur_depart + 1e-5)
+    modele.setObjective(c["T"][0], "minimize")
+    if bilan["amorce_reconnue"]:
+        restaurer_solution(modele, variables, sauvegarde)
+    restant = budget - (perf_counter() - debut)
+    if restant > 0.1:
+        modele.setRealParam("limits/time", modele.getSolvingTime() + restant)
+        modele.optimize()
+        bilan["statut"] = str(modele.getStatus())
+        bilan["noeuds"] = modele.getNNodes()
+        if modele.getNSols() > 0:
+            _, valeurs = memoriser_solution(c, modele.getBestSol())
+            nouveaux = _extraire(c, {**valeurs, c["u"][0].name: 1.0}, [ch], colis_liste)
+            if len(nouveaux) == 1 and len(nouveaux[0].boites) == len(ch.boites):
+                nouveau = nouveaux[0]
+                valide = _charge_valide(nouveau, params, regles)
+                if nouveau.hauteur < ch.hauteur - 1e-3 and valide:
+                    ch.boites = nouveau.boites
+                    bilan.update(apres=nouveau.hauteur, amelioree=True)
+                bilan["optimal"] = bilan["statut"] == "optimal" and valide
+    bilan["duree"] = perf_counter() - debut
+    return bilan
+
+
+def minimiser_hauteurs_par_palette(chs: list[_Chargement], params: Parametres, regles: ReglesSeparation,
+                                   temps_limite: float) -> list[dict]:
+    """Partage un budget commun entre les palettes (poids = carré du nombre de colis)."""
+    debut = perf_counter()
+    poids = [max(1, len(ch.boites) ** 2) for ch in chs]
+    bilans = []
+    for index, ch in enumerate(chs):
+        restant = max(0.0, temps_limite - (perf_counter() - debut))
+        budget = restant * poids[index] / sum(poids[index:]) if restant else 0.0
+        bilan = optimiser_hauteur_une_palette(ch, index + 1, params, regles, budget)
+        bilan["budget"] = round(budget, 2)
+        bilans.append(bilan)
+    return bilans
+
+
+# ---------------------------------------------------------------------------
+# Compatibilité : point d'entrée direct
+# ---------------------------------------------------------------------------
+
+def optimiser(colis: list[Colis], params: Parametres | None = None,
+              regles: ReglesSeparation | None = None) -> Resultat:
+    """Pipeline complet avec le moteur SCIP (équivalent à ``optimisation.optimiser`` avec moteur = "scip")."""
+    from . import optimisation
+    params = params or Parametres()
+    params.moteur = "scip"
+    return optimisation.optimiser(colis, params, regles or regles_par_defaut())

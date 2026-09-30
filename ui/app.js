@@ -11,6 +11,7 @@ const etat = {
   parametres: {},
   resultat: null,        // dernier plan calculé
   paletteCourante: 'ensemble',
+  etape: 'finale',       // étape du pipeline affichée : 'heuristique', 'scip' ou 'finale'
   mode: 'categories',
   selection: null,       // {numero, palette}
   edition: null,         // index du colis en cours de modification
@@ -54,6 +55,14 @@ function chargerLocal() {
     const p = localStorage.getItem('palettiseur.parametres');
     if (p) etat.parametres = { ...etat.parametres, ...JSON.parse(p) };
   } catch (e) { /* ignore */ }
+}
+/** Données de l'étape affichée : palettes, vérification et bilan de cette étape, reste du résultat commun. */
+function donnees() {
+  const res = etat.resultat;
+  if (!res) return null;
+  if (etat.etape === 'finale') return res;
+  const e = (res.etapes || []).find((x) => x.cle === etat.etape);
+  return e && e.palettes ? { ...res, palettes: e.palettes, verification: e.verification, bilan: e.bilan } : res;
 }
 function chipClasse(code) {
   const cl = etat.classes[code];
@@ -198,6 +207,7 @@ function surClicListe(e) {
   // Sélection dans la vue 3D
   const c = etat.colis[i];
   const numero = (c.quantite || 1) > 1 ? `${c.numero}-1` : c.numero;
+  if (etat.resultat && etat.etape !== 'finale') changerEtape('finale');
   selectionnerColis(numero, null, true);
 }
 
@@ -236,8 +246,8 @@ function majAideMoteur() {
   const code = $('#select-moteur').value;
   const m = etat.config.moteurs.find((x) => x.code === code);
   $('#aide-moteur').textContent = !m ? '' : m.code === 'scip'
-    ? 'Modèle mathématique exact (PySCIPOpt) : réservé aux petites listes (≤ 10 colis), plusieurs minutes de calcul.'
-    : 'Heuristique constructive relancée avec plusieurs stratégies pendant la durée indiquée ; la meilleure solution est conservée.';
+    ? 'Pipeline du notebook CDP : l\'heuristique sert d\'amorce à SCIP (réduction du nombre d\'emplacements) puis hauteurs par palette avec SCIP. Plusieurs minutes possibles ; réservé aux listes de moins de 60 colis.'
+    : 'Six phases sans solveur : multi-départ, fusion des palettes, recentrage et tassement, hauteurs, finalisation. Quelques secondes.';
 }
 function remplirSelectMoteur() {
   const sel = $('#select-moteur');
@@ -261,7 +271,10 @@ async function optimiser() {
     for (const pal of res.palettes) for (const p of pal.placements) res._indexColis[p.colis.numero] = pal.numero;
     etat.resultat = res;
     etat.selection = null;
+    etat.etape = 'finale';
     etat.paletteCourante = res.palettes.length === 1 ? 1 : 'ensemble';
+    afficherEtapes();
+    afficherJournal();
     afficherOnglets();
     afficherVue();
     afficherBilan();
@@ -270,7 +283,7 @@ async function optimiser() {
     afficherInfoColis(null);
     const nbErr = res.verification.filter((m) => m.niveau === 'erreur').length;
     notifier(`${res.palettes.length} palette(s), ${res.bilan.positions_utilisees} emplacement(s), ${res.bilan.colis_places} colis placés`
-      + (res.non_places.length ? `, ${res.non_places.length} non placé(s)` : '') + ` — ${res.iterations} solutions explorées en ${res.duree} s`
+      + (res.non_places.length ? `, ${res.non_places.length} non placé(s)` : '') + ` — ${res.iterations} construction(s) en ${res.duree} s`
       + (nbErr ? ` — ${nbErr} erreur(s) à corriger` : ''), nbErr > 0);
   } catch (e) {
     notifier('Échec du calcul : ' + e.message, true);
@@ -282,14 +295,61 @@ async function optimiser() {
 
 // ---------------------------------------------------------------- affichage du résultat
 function palettesAffichees() {
-  if (!etat.resultat) return [];
-  if (etat.paletteCourante === 'ensemble') return etat.resultat.palettes;
-  return etat.resultat.palettes.filter((p) => p.numero === etat.paletteCourante);
+  const d = donnees();
+  if (!d) return [];
+  if (etat.paletteCourante === 'ensemble') return d.palettes;
+  return d.palettes.filter((p) => p.numero === etat.paletteCourante);
+}
+function afficherEtapes() {
+  const zone = $('#barre-etapes');
+  const res = etat.resultat;
+  zone.innerHTML = '';
+  zone.hidden = !res || !(res.etapes && res.etapes.length > 1);
+  if (zone.hidden) return;
+  zone.insertAdjacentHTML('beforeend', '<span class="lib">Étape du calcul :</span>');
+  for (const e of res.etapes) {
+    const b = document.createElement('button');
+    b.className = 'etape' + (e.cle === etat.etape ? ' actif' : '');
+    b.title = e.description;
+    b.innerHTML = `${echapper(e.titre)}<small>${e.nombre_palettes} pal. · ${nombre(e.somme_hauteurs)} cm</small>`;
+    b.addEventListener('click', () => changerEtape(e.cle));
+    zone.appendChild(b);
+  }
+}
+function changerEtape(cle) {
+  etat.etape = cle;
+  const d = donnees();
+  if (etat.paletteCourante !== 'ensemble' && !d.palettes.some((p) => p.numero === etat.paletteCourante)) etat.paletteCourante = 'ensemble';
+  etat.selection = null;
+  afficherEtapes(); afficherOnglets(); afficherVue(); afficherBilan(); afficherMessages(); afficherInfoColis(null);
+}
+function afficherJournal() {
+  const res = etat.resultat;
+  const carte = $('#carte-journal');
+  const ol = $('#liste-journal');
+  ol.innerHTML = '';
+  carte.hidden = !res || !(res.journal && res.journal.length);
+  if (carte.hidden) return;
+  const cibles = { 1: 'heuristique', 2: 'scip', 6: 'finale' };
+  for (const j of res.journal) {
+    const li = document.createElement('li');
+    li.className = j.ignoree ? 'ignoree' : '';
+    const bilan = j.palettes !== undefined ? `<span class="bilan">${j.palettes} pal. · ${nombre(j.hauteurs)} cm</span>` : '';
+    li.innerHTML = `<div class="tete"><strong>Phase ${j.phase} — ${echapper(j.titre)}</strong><span class="duree">${j.duree.toFixed(2)} s</span></div>
+      ${bilan}<div class="texte">${echapper(j.texte)}</div>`;
+    const cle = cibles[j.phase];
+    if (cle && !j.ignoree && (res.etapes || []).some((e) => e.cle === cle)) {
+      li.style.cursor = 'pointer';
+      li.title = 'Afficher cet état dans la vue 3D';
+      li.addEventListener('click', () => changerEtape(cle));
+    }
+    ol.appendChild(li);
+  }
 }
 function afficherOnglets() {
   const zone = $('#onglets');
   zone.innerHTML = '';
-  const res = etat.resultat;
+  const res = donnees();
   if (!res) return;
   const items = [{ id: 'ensemble', txt: `Vue d'ensemble <span class="type">${res.palettes.length} palette(s)</span>` }];
   for (const p of res.palettes) {
@@ -305,7 +365,7 @@ function afficherOnglets() {
   }
 }
 function afficherVue() {
-  const res = etat.resultat;
+  const res = donnees();
   $('#message-vue').hidden = !!(res && res.palettes.length);
   if (!res) return;
   vue.afficherPalettes(palettesAffichees(), {
@@ -319,7 +379,7 @@ function afficherVue() {
 }
 function afficherLegende() {
   const zone = $('#legende');
-  const res = etat.resultat;
+  const res = donnees();
   if (!res) { zone.innerHTML = ''; return; }
   const pals = palettesAffichees();
   if (etat.mode === 'poids') {
@@ -345,7 +405,7 @@ function afficherLegende() {
   zone.innerHTML = `<span class="item"><strong>Catégories</strong></span>` + items.join('');
 }
 function afficherBilan() {
-  const res = etat.resultat;
+  const res = donnees();
   const b = res.bilan;
   const zone = $('#grille-bilan');
   const ligne = (cle, valeur, classe = '') => `<div class="cle">${cle}</div><div class="valeur ${classe}">${valeur}</div>`;
@@ -360,14 +420,14 @@ function afficherBilan() {
     ligne(`Passagers (${b.passagers})`, `${nombre(b.masse_passagers)} kg`),
     ligne('Charge totale', `${nombre(b.masse_totale_brute)} / ${nombre(b.capacite_avion)} kg`, masseOk ? 'bon' : 'mauvais'),
     ligne('Somme des hauteurs', `${nombre(b.somme_hauteurs)} cm`),
-    ligne('Calcul', `${res.iterations} solutions · ${res.duree} s`),
+    ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${res.moteur === 'scip' ? 'SCIP' : 'heuristique'}`),
   ].join('');
   $('#boutons-export').hidden = false;
   $('#info-export').hidden = true;
 }
 function afficherInfoPalette(numero) {
   const zone = $('#contenu-palette');
-  const res = etat.resultat;
+  const res = donnees();
   if (!res || numero === null) {
     if (res && res.palettes.length) {
       zone.innerHTML = `<p class="aide">Vue d'ensemble : ${res.palettes.length} palette(s) alignées dans l'ordre de confection (l'ordre réel dans l'avion est décidé par le mécanicien navigant). Cliquez sur un onglet pour le détail d'une palette.</p>`;
@@ -429,7 +489,7 @@ function afficherInfoColis(placement, palette) {
   </dl></div>`;
 }
 function selectionnerColis(numero, palette = null, depuisListe = false) {
-  const res = etat.resultat;
+  const res = donnees();
   if (!res) return;
   let cible = null;
   for (const pal of res.palettes) for (const p of pal.placements) {
@@ -448,7 +508,7 @@ function selectionnerColis(numero, palette = null, depuisListe = false) {
   if (depuisListe) afficherListe();
 }
 function afficherMessages() {
-  const res = etat.resultat;
+  const res = donnees();
   const ul = $('#liste-messages');
   ul.innerHTML = '';
   const msgs = res ? res.verification : [];
@@ -487,7 +547,7 @@ async function exporter(format, extra = {}) {
   } catch (e) { notifier('Export impossible : ' + e.message, true); }
 }
 function planCsv() {
-  const res = etat.resultat;
+  const res = donnees();
   const lignes = [['palette', 'type_palette', 'zone', 'numero_colis', 'classe', 'masse_kg', 'x_cm', 'y_cm', 'z_cm', 'dim_x_cm', 'dim_y_cm', 'dim_z_cm', 'renversable', 'fragile', 'commentaire']];
   for (const pal of res.palettes) {
     const tri = [...pal.placements].sort((a, b) => a.z - b.z || a.y - b.y || a.x - b.x);
@@ -514,7 +574,7 @@ function plan2D(p) {
   </svg>`;
 }
 function ouvrirFiche() {
-  const res = etat.resultat;
+  const res = donnees();
   if (!res) return;
   const pals = etat.paletteCourante === 'ensemble' ? res.palettes : res.palettes.filter((p) => p.numero === etat.paletteCourante);
   const date = new Date().toLocaleString('fr-FR');
@@ -589,14 +649,25 @@ async function initialiser() {
     if (!etat.colis.length || confirm('Supprimer tous les colis de la liste ?')) {
       etat.colis = []; etat.resultat = null; etat.selection = null; sauvegarderLocal(); afficherListe(); afficherOnglets();
       $('#message-vue').hidden = false; vue.vider(); vue.demanderRendu(); afficherMessages(); $('#grille-bilan').innerHTML = '<p class="vide">Lancez un calcul pour obtenir le bilan.</p>'; $('#boutons-export').hidden = true;
-      afficherInfoColis(null); afficherInfoPalette(null); $('#legende').innerHTML = ''; reinitialiserFormulaire();
+      afficherInfoColis(null); afficherInfoPalette(null); $('#legende').innerHTML = ''; afficherEtapes(); afficherJournal(); reinitialiserFormulaire();
     }
   });
-  $('#btn-exemple').addEventListener('click', async () => {
-    if (etat.colis.length && !confirm('Remplacer la liste actuelle par le jeu d\'exemple ?')) return;
-    const rep = await api('/api/exemple');
+  const selExemple = $('#sel-exemple');
+  for (const ex of etat.config.exemples) {
+    const o = document.createElement('option');
+    o.value = ex.cle; o.textContent = ex.titre; o.title = ex.description;
+    selExemple.appendChild(o);
+  }
+  selExemple.addEventListener('change', async () => {
+    const nom = selExemple.value;
+    selExemple.value = '';
+    if (!nom) return;
+    if (etat.colis.length && !confirm('Remplacer la liste actuelle par cet exemple ?')) return;
+    const rep = await api('/api/exemple?nom=' + encodeURIComponent(nom));
+    const garde = { moteur: etat.parametres.moteur, duree_recherche: etat.parametres.duree_recherche, temps_limite_scip: etat.parametres.temps_limite_scip };
+    etat.parametres = { ...etat.config.parametres, ...garde, ...(rep.parametres || {}) };
     etat.colis = rep.colis; sauvegarderLocal(); afficherListe(); reinitialiserFormulaire();
-    notifier(`${rep.colis.length} lignes d'exemple chargées. Cliquez sur « Confectionner les palettes ».`);
+    notifier(`${rep.titre} : ${rep.colis.length} ligne(s) chargée(s)` + (rep.parametres ? ' avec les paramètres du notebook' : '') + '. Cliquez sur « Confectionner les palettes ».');
   });
   $('#btn-importer').addEventListener('click', () => $('#fichier-import').click());
   $('#fichier-import').addEventListener('change', (e) => { if (e.target.files[0]) importerFichier(e.target.files[0]); e.target.value = ''; });

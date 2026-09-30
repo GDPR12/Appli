@@ -18,7 +18,7 @@
     </div>
   </div>
   <div class="actions">
-    <button id="btn-exemple" class="secondaire" title="Charger un jeu de colis d'exemple">Exemple</button>
+    <select id="sel-exemple" class="secondaire" title="Charger un jeu de colis d'exemple"><option value="">Exemples…</option></select>
     <button id="btn-importer" class="secondaire" title="Importer une liste de colis (CSV MEAT/SILRIA ou projet JSON)">Importer…</button>
     <input type="file" id="fichier-import" accept=".csv,.txt,.json" hidden>
     <button id="btn-enregistrer" class="secondaire" title="Enregistrer la liste de colis et les paramètres (JSON)">Enregistrer</button>
@@ -95,6 +95,7 @@
     <div class="onglets" id="onglets">
       <button class="onglet actif" data-palette="ensemble">Vue d'ensemble</button>
     </div>
+    <div class="barre-etapes" id="barre-etapes" hidden></div>
     <div class="barre-vue">
       <div class="groupe" role="group" aria-label="Mode de couleur">
         <button class="mode actif" data-mode="categories" title="Colis ordinaires en gris, colis spéciaux colorés par classe">Catégories</button>
@@ -147,6 +148,11 @@
       <h2>Vérification <span class="badge" id="compteur-messages">0</span></h2>
       <ul id="liste-messages"><li class="vide">Aucun message.</li></ul>
     </section>
+
+    <section class="carte" id="carte-journal" hidden>
+      <h2>Journal de calcul</h2>
+      <ol id="liste-journal"></ol>
+    </section>
   </aside>
 </main>
 
@@ -190,7 +196,8 @@
         <legend>Calcul</legend>
         <label>Moteur<select data-param="moteur" id="select-moteur"></select></label>
         <p class="aide" id="aide-moteur"></p>
-        <label>Durée de recherche (s)<input type="number" data-param="duree_recherche" step="1" min="1" max="600"></label>
+        <label title="Phases 1 (multi-départ), 3 (fusion) et 5 (hauteurs) de l'heuristique">Budget de l'heuristique (s)<input type="number" data-param="duree_recherche" step="1" min="1" max="600"></label>
+        <label title="Temps accordé à chaque étape SCIP : validation de l'amorce, chaque cible de réduction, hauteurs">Temps SCIP par étape (s)<input type="number" data-param="temps_limite_scip" step="10" min="1" max="3600"></label>
         <label>Graine aléatoire<input type="number" data-param="graine" step="1" min="0"></label>
       </fieldset>
     </div>

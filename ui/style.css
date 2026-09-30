@@ -106,6 +106,24 @@ button.mode.actif { background: var(--primaire); color: #fff; border-color: var(
 .legende .degrade { width: 160px; height: 12px; border-radius: 3px; border: 1px solid var(--bordure); }
 .info-bulle { position: absolute; pointer-events: none; background: rgba(20,33,61,.92); color: #fff; padding: 4px 8px; border-radius: 5px; font-size: 12px; transform: translate(12px, 12px); white-space: nowrap; z-index: 4; }
 
+.barre-etapes { display: flex; gap: 6px; align-items: center; padding: 6px 10px; background: #fafbfc; border-bottom: 1px solid var(--bordure); flex-wrap: wrap; font-size: 12px; }
+.barre-etapes .lib { color: var(--texte-doux); margin-right: 2px; }
+button.etape { padding: 4px 10px; font-size: 12px; border-radius: 14px; }
+button.etape small { color: var(--texte-doux); margin-left: 4px; }
+button.etape.actif { background: #14213d; color: #fff; border-color: #14213d; }
+button.etape.actif small { color: #cbd5e1; }
+select.secondaire { width: auto; background: rgba(255,255,255,.08); color: #fff; border-color: rgba(255,255,255,.2); padding: 7px 8px; cursor: pointer; }
+select.secondaire option { color: #1f2937; }
+
+/* ---- Journal de calcul ---- */
+#liste-journal { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#liste-journal li { font-size: 12px; border-left: 4px solid var(--primaire); background: #f7f9fc; padding: 6px 8px; border-radius: 0 6px 6px 0; }
+#liste-journal li.ignoree { border-color: var(--bordure); color: var(--texte-doux); background: #fafafa; }
+#liste-journal .tete { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+#liste-journal .duree { color: var(--texte-doux); white-space: nowrap; }
+#liste-journal .bilan { color: var(--primaire); font-weight: 600; }
+#liste-journal .texte { margin-top: 3px; line-height: 1.35; }
+
 /* ---- Droite ---- */
 .grille-bilan { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: 13px; }
 .grille-bilan .cle { color: var(--texte-doux); font-size: 12px; }

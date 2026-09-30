@@ -6,7 +6,8 @@ from itertools import permutations
 
 from .modeles import Colis, Placement
 
-EPS = 1e-6
+EPS = 1e-3          # cm : recouvrement inférieur à 0,01 mm = pas de chevauchement (bruit numérique)
+TOL_SUPPORT = 0.01  # cm : deux faces horizontales à moins de 0,1 mm sont considérées jointives
 
 
 def orientations(colis: Colis) -> list[tuple[float, float, float]]:
@@ -42,7 +43,7 @@ def se_chevauchent(p: Placement, q: Placement) -> bool:
             and recouvrement_1d(p.z, p.z2, q.z, q.z2) > EPS)
 
 
-def supports(p: Placement, autres: list[Placement], jeu: float = 0.5) -> list[tuple[Placement, float]]:
+def supports(p: Placement, autres: list[Placement], jeu: float = TOL_SUPPORT) -> list[tuple[Placement, float]]:
     """Colis sur lesquels ``p`` repose : sommet à la hauteur de sa base, avec aire commune > 0."""
     res = []
     for q in autres:
@@ -56,10 +57,10 @@ def supports(p: Placement, autres: list[Placement], jeu: float = 0.5) -> list[tu
 
 
 def taux_support(p: Placement, autres: list[Placement], jeu: float = 0.5) -> float:
-    """Part de la base de ``p`` qui repose sur le sol (z = 0) ou sur d'autres colis."""
+    """Part de la base de ``p`` qui repose sur le sol (z = 0, à ``jeu`` près) ou sur d'autres colis."""
     if p.z <= jeu:
         return 1.0
-    aire = sum(a for _, a in supports(p, autres, jeu))
+    aire = sum(a for _, a in supports(p, autres))
     return min(1.0, aire / p.base) if p.base > 0 else 0.0
 
 

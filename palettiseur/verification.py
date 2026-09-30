@@ -42,7 +42,8 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
     for p in pls:
         c = p.colis
         # Orientation autorisée
-        if (p.dx, p.dy, p.dz) not in orientations(c):
+        if not any(abs(p.dx - o[0]) < 1e-6 and abs(p.dy - o[1]) < 1e-6 and abs(p.dz - o[2]) < 1e-6
+                   for o in orientations(c)):
             msgs.append(Message("erreur", "orientation", f"Colis {c.numero} : orientation non autorisée "
                                 f"(colis à sens obligatoire).", n, [c.numero]))
         # Dans le volume
@@ -55,7 +56,7 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
             msgs.append(Message("erreur", "support", f"Colis {c.numero} : seulement {ts:.0%} de sa base est "
                                 f"soutenue (minimum {params.support_minimal:.0%}).", n, [c.numero]))
         # Masse et fragilité des supports
-        for q, _ in supports(p, pls, jeu):
+        for q, _ in supports(p, pls):
             if c.masse > params.facteur_masse * q.colis.masse + 1e-6:
                 msgs.append(Message("erreur", "lourd_sur_leger", f"Colis {c.numero} ({c.masse:g} kg) est posé "
                                     f"sur le colis {q.colis.numero} plus léger ({q.colis.masse:g} kg).",

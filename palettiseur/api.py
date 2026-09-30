@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 from . import avion, fichiers
 from .coloriage import COULEURS_CARTE, coloriage_carte, heat_map
 from .iata import description_classes, regles
 from .modeles import Colis, Parametres, Resultat
 from .optimisation import optimiser
+from .ressources import chemin_donnees
 from .verification import verifier
 
 
@@ -20,19 +23,28 @@ def configuration() -> dict:
         "versions_avion": [{"passagers_max": p, "palettes": n} for p, n in avion.VERSIONS],
         "couleurs_carte": COULEURS_CARTE,
         "moteurs": moteurs_disponibles(),
+        "exemples": EXEMPLES,
     }
 
 
 def moteurs_disponibles() -> list[dict]:
-    liste = [{"code": "heuristique", "libelle": "Heuristique multi-départ (rapide)", "disponible": True}]
+    liste = [{"code": "heuristique", "libelle": "Heuristique + fusion + tassement (rapide)", "disponible": True}]
     try:
-        from . import moteur_scip  # noqa: F401
+        from . import moteur_scip
         dispo, detail = moteur_scip.disponible()
     except Exception as e:  # pragma: no cover - dépend de l'installation
         dispo, detail = False, str(e)
-    liste.append({"code": "scip", "libelle": "Programme linéaire en nombres entiers SCIP (exact, lent)",
+    liste.append({"code": "scip", "libelle": "Heuristique + SCIP (pipeline du notebook CDP)",
                   "disponible": dispo, "detail": detail})
     return liste
+
+
+EXEMPLES = [
+    {"cle": "cdp", "titre": "CDP – 54 colis du notebook",
+     "description": "Les 54 colis réels du notebook CDP_1 (sens obligatoire, 7 palettes de soute et 2 de rampe)."},
+    {"cle": "iata", "titre": "Mixte – matières dangereuses, armement et BIPAL",
+     "description": "Liste variée : classes IATA incompatibles, armement, fragiles, colis à sens obligatoire et colis de 3 m."},
+]
 
 
 def colis_depuis_liste(liste: list[dict]) -> list[Colis]:
@@ -51,39 +63,55 @@ def colis_depuis_liste(liste: list[dict]) -> list[Colis]:
     return colis
 
 
-def resultat_vers_dict(resultat: Resultat) -> dict:
-    params = resultat.parametres
-    messages = verifier(resultat)
-    palettes = []
-    for pal in resultat.palettes:
+def _palettes_dict(palettes, params: Parametres) -> list[dict]:
+    res = []
+    for pal in palettes:
         d = pal.vers_dict(params.tare_palette)
         d["carte_tous"] = coloriage_carte(pal, params.jeu_contact, False)
         d["carte_speciaux"] = coloriage_carte(pal, params.jeu_contact, True)
-        palettes.append(d)
+        res.append(d)
+    return res
+
+
+def _etat_dict(palettes, resultat: Resultat) -> dict:
+    """Palettes, vérification et bilan d'un état du pipeline (mêmes règles que la solution finale)."""
+    etat = Resultat(palettes, resultat.non_places, resultat.parametres)
+    return {"palettes": _palettes_dict(palettes, resultat.parametres),
+            "verification": [m.vers_dict() for m in verifier(etat)], "bilan": avion.bilan(etat)}
+
+
+def resultat_vers_dict(resultat: Resultat) -> dict:
+    params = resultat.parametres
+    finale = _etat_dict(resultat.palettes, resultat)
+    etapes = []
+    for e in resultat.etapes:
+        item = {"cle": e.cle, "titre": e.titre, "description": e.description,
+                "nombre_palettes": len(e.palettes), "positions": sum(p.type.positions for p in e.palettes),
+                "somme_hauteurs": round(sum(p.hauteur for p in e.palettes), 1)}
+        if e.cle != "finale":
+            item.update(_etat_dict(e.palettes, resultat))
+        etapes.append(item)
     return {
         "statut": resultat.statut,
         "moteur": resultat.moteur,
         "duree": round(resultat.duree, 2),
         "iterations": resultat.iterations,
         "parametres": params.vers_dict(),
-        "palettes": palettes,
+        "palettes": finale["palettes"],
         "non_places": [{"colis": c.vers_dict(), "motif": m} for c, m in resultat.non_places],
-        "verification": [m.vers_dict() for m in messages],
-        "bilan": avion.bilan(resultat),
+        "verification": finale["verification"],
+        "bilan": finale["bilan"],
         "heat_map": heat_map(resultat.palettes),
         "couleurs_carte": COULEURS_CARTE,
+        "etapes": etapes,
+        "journal": resultat.journal,
     }
 
 
 def lancer_optimisation(liste_colis: list[dict], parametres: dict | None) -> dict:
     params = Parametres.depuis_dict(parametres)
     colis = colis_depuis_liste(liste_colis)
-    if params.moteur == "scip":
-        from . import moteur_scip
-        resultat = moteur_scip.optimiser(colis, params)
-    else:
-        resultat = optimiser(colis, params)
-    return resultat_vers_dict(resultat)
+    return resultat_vers_dict(optimiser(colis, params))
 
 
 def importer_texte(texte: str) -> dict:
@@ -111,8 +139,18 @@ def importer_texte(texte: str) -> dict:
     return {"colis": [c.vers_dict() for c in colis], "avertissements": avert, "parametres": None}
 
 
-def exemple() -> list[dict]:
-    """Jeu de colis d'exemple (inspiré du notebook CDP et des cas du projet)."""
+def exemple(nom: str = "iata") -> dict:
+    """Jeu de colis d'exemple : ``{"titre", "description", "colis", "parametres"}``."""
+    if nom == "cdp":
+        with open(chemin_donnees("exemple_cdp.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return {"titre": EXEMPLES[0]["titre"], "description": data.get("_description", ""),
+                "colis": data["colis"], "parametres": data.get("parametres")}
+    return {"titre": EXEMPLES[1]["titre"], "description": EXEMPLES[1]["description"],
+            "colis": _exemple_iata(), "parametres": None}
+
+
+def _exemple_iata() -> list[dict]:
     base = [
         dict(numero="C-001", longueur=80, largeur=60, hauteur=50, masse=120, renversable=True, classe="", commentaire="Caisse outillage"),
         dict(numero="C-002", longueur=70, largeur=50, hauteur=40, masse=90, renversable=True, classe="", commentaire=""),
