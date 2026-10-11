@@ -1,5 +1,5 @@
 {
- "_description": "Colis réels du notebook CDP_1 (id, masse kg, longueur, largeur, hauteur en cm). Tous à sens obligatoire (r = 1).",
+ "_description": "Colis réels du notebook CDP_2 (CARGO données extraites.xlsx) : numéro, masse (kg), longueur, largeur, hauteur (cm), classe IATA pour les colis 1 à 5 (9, 3, 3, 3, 2.2). Tous à sens obligatoire (r = 1). Palettes de 2,54 m de haut.",
  "colis": [
   {
    "numero": "1",
@@ -8,7 +8,7 @@
    "largeur": 30,
    "hauteur": 15,
    "renversable": false,
-   "classe": "",
+   "classe": "9",
    "commentaire": "",
    "fragile": false,
    "quantite": 1
@@ -20,7 +20,7 @@
    "largeur": 25,
    "hauteur": 35,
    "renversable": false,
-   "classe": "",
+   "classe": "3",
    "commentaire": "",
    "fragile": false,
    "quantite": 1
@@ -32,7 +32,7 @@
    "largeur": 30,
    "hauteur": 30,
    "renversable": false,
-   "classe": "",
+   "classe": "3",
    "commentaire": "",
    "fragile": false,
    "quantite": 1
@@ -44,7 +44,7 @@
    "largeur": 30,
    "hauteur": 30,
    "renversable": false,
-   "classe": "",
+   "classe": "3",
    "commentaire": "",
    "fragile": false,
    "quantite": 1
@@ -56,7 +56,7 @@
    "largeur": 60,
    "hauteur": 45,
    "renversable": false,
-   "classe": "",
+   "classe": "2.2",
    "commentaire": "",
    "fragile": false,
    "quantite": 1
@@ -653,12 +653,13 @@
  "parametres": {
   "derogation_couloir": true,
   "tare_palette": 0,
-  "hauteur_max": 200,
+  "hauteur_max": 254,
   "masse_max_soute": 4536,
   "masse_max_rampe": 3000,
   "positions_soute": 7,
   "positions_rampe": 2,
   "autoriser_bipal": true,
-  "autoriser_tripal": true
+  "autoriser_tripal": true,
+  "hauteur_max_rampe": 254
  }
 }

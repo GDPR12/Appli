@@ -6,7 +6,8 @@ import json
 
 from . import avion, fichiers
 from .coloriage import COULEURS_CARTE, coloriage_carte, heat_map
-from .iata import description_classes, regles
+from .geometrie import cotes_visibles
+from .iata import classe as classe_de, description_classes, regles
 from .modeles import Colis, Parametres, Resultat
 from .optimisation import optimiser
 from .ressources import chemin_donnees
@@ -41,7 +42,7 @@ def moteurs_disponibles() -> list[dict]:
 
 EXEMPLES = [
     {"cle": "cdp", "titre": "CDP – 54 colis du notebook",
-     "description": "Les 54 colis réels du notebook CDP_1 (sens obligatoire, 7 palettes de soute et 2 de rampe)."},
+     "description": "Les 54 colis réels du notebook CDP_2 : sens obligatoire, 5 colis dangereux (classes 9, 3 et 2.2), palettes de 2,54 m."},
     {"cle": "iata", "titre": "Mixte – matières dangereuses, armement et BIPAL",
      "description": "Liste variée : classes IATA incompatibles, armement, fragiles, colis à sens obligatoire et colis de 3 m."},
 ]
@@ -67,6 +68,9 @@ def _palettes_dict(palettes, params: Parametres) -> list[dict]:
     res = []
     for pal in palettes:
         d = pal.vers_dict(params.tare_palette)
+        for placement, dict_placement in zip(pal.placements, d["placements"]):
+            if classe_de(placement.colis.classe).iata:           # côtés depuis lesquels l'étiquette est visible
+                dict_placement["acces_iata"] = list(cotes_visibles(placement, pal.placements))
         d["carte_tous"] = coloriage_carte(pal, params.jeu_contact, False)
         d["carte_speciaux"] = coloriage_carte(pal, params.jeu_contact, True)
         res.append(d)

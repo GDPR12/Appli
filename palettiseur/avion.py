@@ -46,4 +46,5 @@ def bilan(resultat: Resultat) -> dict:
         "colis_places": sum(len(p.placements) for p in palettes),
         "colis_non_places": len(resultat.non_places),
         "somme_hauteurs": round(resultat.somme_hauteurs, 1),
+        "hauteur_globale": round(max((p.hauteur for p in palettes), default=0.0), 1),
     }

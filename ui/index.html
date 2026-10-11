@@ -189,7 +189,7 @@
         <legend>Règles de confection</legend>
         <label>Support minimal de la base (%)<input type="number" data-param="support_minimal" data-pourcent="1" step="5" min="10" max="100"></label>
         <label title="1,0 = un colis ne peut être posé que sur des colis au moins aussi lourds que lui">Facteur masse dessus / dessous<input type="number" data-param="facteur_masse" step="0.1" min="0.1"></label>
-        <label class="case"><input type="checkbox" data-param="iata_au_bord"> Colis IATA contre une face côté couloir</label>
+        <label class="case" title="Un colis dangereux ne doit pas être masqué des deux côtés (gauche et droite) par d'autres colis"><input type="checkbox" data-param="iata_acces"> Colis IATA visibles depuis un côté</label>
         <label>Tolérance de contact (cm)<input type="number" data-param="jeu_contact" step="0.1" min="0"></label>
       </fieldset>
       <fieldset>

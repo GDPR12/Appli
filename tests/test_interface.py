@@ -80,7 +80,7 @@ def test_parcours_complet(app):
 
     # --- étapes et journal
     assert page.locator("button.etape").count() == 2
-    assert page.locator("#liste-journal li").count() == 6
+    assert page.locator("#liste-journal li").count() == 5
     page.click("button.etape >> nth=0")
     assert page.evaluate("window.palettiseur.etat.etape") == "heuristique"
     assert page.locator("button.onglet").count() == 1 + len(page.evaluate("window.palettiseur.etat.resultat.etapes[0].palettes"))
@@ -118,13 +118,18 @@ def test_parcours_complet(app):
     if dossier:
         page.locator("#carte-journal").screenshot(path=str(Path(dossier) / "journal.png"))
 
+    # --- colis dangereux : l'accès IATA est affiché
+    page.evaluate("window.palettiseur.selectionnerColis('2')")                 # colis 2 : classe IATA 3
+    panneau = page.inner_text("#contenu-colis")
+    assert "étiquette visible" in panneau and ("gauche" in panneau or "droite" in panneau)
+
     # --- fiche palette et paramètres
     page.click("#btn-fiche")
     assert page.locator("#contenu-fiche .page-fiche").count() == 1
     capture("fiche_palette")
     page.click("#btn-fiche-fermer")
     page.click("#btn-parametres")
-    assert page.is_visible("[data-param=temps_limite_scip]")
+    assert page.is_visible("[data-param=temps_limite_scip]") and page.is_visible("[data-param=iata_acces]")
     capture("parametres")
     page.click("#btn-params-annuler")
 

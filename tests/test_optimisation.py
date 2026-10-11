@@ -93,13 +93,32 @@ def test_capacite_masse_palette():
     assert erreurs(r) == []
 
 
-def test_iata_au_bord_couloir():
-    colis = [Colis("carb", 40, 40, 40, 30, classe="3")] + [Colis(f"o{i}", 40, 40, 40, 30) for i in range(20)]
-    r = optimiser(colis, Parametres(duree_recherche=0.5))
-    for pal in r.palettes:
-        for p in pal.placements:
-            if p.colis.classe:
-                assert p.x <= 0.5 or p.x2 >= pal.type.largeur - 0.5
+def test_colis_iata_toujours_visibles_a_chaque_etape():
+    """Règle de CDP_2 : chaque colis dangereux reste visible depuis au moins un côté, à chaque étape du calcul."""
+    from palettiseur.geometrie import cotes_visibles
+    from palettiseur.iata import classe as classe_de
+    colis = [Colis(f"d{i}", 40, 40, 40, 30, classe=c) for i, c in enumerate(["3", "3", "9", "2.2", "8"])]
+    colis += [Colis(f"o{i}", 50, 40, 40, 30) for i in range(30)]
+    r = optimiser(colis, Parametres(duree_recherche=0.8))
+    for etape in r.etapes:
+        for pal in etape.palettes:
+            for p in pal.placements:
+                if classe_de(p.colis.classe).iata:
+                    assert cotes_visibles(p, pal.placements), (etape.cle, p.colis.numero)
+    assert erreurs(r) == []
+
+
+def test_les_colis_dangereux_sont_places_en_premier_les_plus_incompatibles_d_abord():
+    import random
+    from palettiseur.optimisation import Strategie, _ordre_placement, _type_requis
+    from palettiseur.iata import regles
+    p = Parametres()
+    lot = [Colis("ordinaire", 100, 100, 100, 500), Colis("c2.2", 30, 30, 30, 1, classe="2.2"),
+           Colis("c1", 30, 30, 30, 1, classe="1"), Colis("c3", 30, 30, 30, 1, classe="3"), Colis("c9", 30, 30, 30, 1, classe="9")]
+    a_placer = [(c, _type_requis(c, p.types_palettes())) for c in lot]
+    ordre = [c.numero for c, _ in _ordre_placement(a_placer, p, Strategie("masse", "cdp"), random.Random(0), regles())]
+    # nombre de classes incompatibles : 1 -> 11, 9 -> 5, 3 -> 3, 2.2 -> 1 ; l'ordinaire passe en dernier malgré sa masse
+    assert ordre == ["c1", "c9", "c3", "c2.2", "ordinaire"]
 
 
 def test_fragile_rien_dessus():

@@ -45,14 +45,14 @@ async function api(route, corps) {
 function sauvegarderLocal() {
   try {
     localStorage.setItem('palettiseur.colis', JSON.stringify(etat.colis));
-    localStorage.setItem('palettiseur.parametres', JSON.stringify(etat.parametres));
+    localStorage.setItem('palettiseur.parametres.v2', JSON.stringify(etat.parametres));
   } catch (e) { /* stockage indisponible : on ignore */ }
 }
 function chargerLocal() {
   try {
     const c = localStorage.getItem('palettiseur.colis');
     if (c) etat.colis = JSON.parse(c);
-    const p = localStorage.getItem('palettiseur.parametres');
+    const p = localStorage.getItem('palettiseur.parametres.v2');
     if (p) etat.parametres = { ...etat.parametres, ...JSON.parse(p) };
   } catch (e) { /* ignore */ }
 }
@@ -135,7 +135,7 @@ function majAideClasse() {
   if (!code || !cl) { aide.textContent = 'Colis ordinaire : aucune contrainte de séparation.'; return; }
   const incomp = (etat.config.incompatibilites[code] || []);
   let txt = cl.description ? cl.description + ' ' : '';
-  if (cl.iata) txt += 'Étiquette IATA : placé contre une face côté couloir. ';
+  if (cl.iata) txt += 'Étiquette IATA : le colis reste visible depuis au moins un côté (gauche ou droite). ';
   txt += incomp.length ? `Jamais sur la même palette que : ${incomp.join(', ')}.` : 'Compatible avec toutes les autres classes.';
   aide.textContent = txt;
 }
@@ -246,8 +246,8 @@ function majAideMoteur() {
   const code = $('#select-moteur').value;
   const m = etat.config.moteurs.find((x) => x.code === code);
   $('#aide-moteur').textContent = !m ? '' : m.code === 'scip'
-    ? 'Pipeline du notebook CDP : l\'heuristique sert d\'amorce à SCIP (réduction du nombre d\'emplacements) puis hauteurs par palette avec SCIP. Plusieurs minutes possibles ; réservé aux listes de moins de 60 colis.'
-    : 'Six phases sans solveur : multi-départ, fusion des palettes, recentrage et tassement, hauteurs, finalisation. Quelques secondes.';
+    ? 'Pipeline du notebook CDP : l\'heuristique sert d\'amorce à SCIP (réduction du nombre d\'emplacements) puis fusion, tassement vertical et horizontal sans solveur. Plusieurs minutes possibles ; réservé aux listes de moins de 60 colis.'
+    : 'Cinq phases sans solveur : multi-départ, fusion des palettes, tassement vertical, recentrage et tassement horizontal. Quelques secondes.';
 }
 function remplirSelectMoteur() {
   const sel = $('#select-moteur');
@@ -330,7 +330,7 @@ function afficherJournal() {
   ol.innerHTML = '';
   carte.hidden = !res || !(res.journal && res.journal.length);
   if (carte.hidden) return;
-  const cibles = { 1: 'heuristique', 2: 'scip', 6: 'finale' };
+  const cibles = { 1: 'heuristique', 2: 'scip', 5: 'finale' };
   for (const j of res.journal) {
     const li = document.createElement('li');
     li.className = j.ignoree ? 'ignoree' : '';
@@ -419,6 +419,7 @@ function afficherBilan() {
     ligne('Palettes (tare)', `${nombre(b.masse_palettes)} kg`),
     ligne(`Passagers (${b.passagers})`, `${nombre(b.masse_passagers)} kg`),
     ligne('Charge totale', `${nombre(b.masse_totale_brute)} / ${nombre(b.capacite_avion)} kg`, masseOk ? 'bon' : 'mauvais'),
+    ligne('Hauteur globale', `${nombre(b.hauteur_globale)} cm`),
     ligne('Somme des hauteurs', `${nombre(b.somme_hauteurs)} cm`),
     ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${res.moteur === 'scip' ? 'SCIP' : 'heuristique'}`),
   ].join('');
@@ -474,13 +475,13 @@ function afficherInfoColis(placement, palette) {
   const orientationTxt = (placement.dx === c.longueur && placement.dy === c.largeur && placement.dz === c.hauteur) ? 'sens de base'
     : (placement.dz === c.hauteur ? 'tourné à plat (hauteur conservée)' : 'couché (colis renversable)');
   const L = palette.largeur;
-  const auBord = placement.x <= 0.5 || placement.x + placement.dx >= L - 0.5;
+  const acces = placement.acces_iata || [];
   zone.innerHTML = `<div class="fiche-info"><dl>
     <dt>Numéro</dt><dd><strong>${echapper(c.numero)}</strong> · palette ${palette.numero}</dd>
     <dt>Dimensions saisies</dt><dd>${nombre(c.longueur, 1)} × ${nombre(c.largeur, 1)} × ${nombre(c.hauteur, 1)} cm</dd>
     <dt>Posé (X × Y × Z)</dt><dd>${nombre(placement.dx, 1)} × ${nombre(placement.dy, 1)} × ${nombre(placement.dz, 1)} cm · ${orientationTxt}</dd>
     <dt>Masse</dt><dd>${nombre(c.masse, 1)} kg</dd>
-    <dt>Classe</dt><dd>${chipClasse(c.classe)} ${echapper(libelleClasse(c.classe))}${c.classe && etat.classes[c.classe]?.iata ? (auBord ? ' · <span style="color:var(--ok)">au bord (étiquette accessible)</span>' : ' · <span style="color:var(--alerte)">pas au bord</span>') : ''}</dd>
+    <dt>Classe</dt><dd>${chipClasse(c.classe)} ${echapper(libelleClasse(c.classe))}${c.classe && etat.classes[c.classe]?.iata ? (acces.length ? ` · <span style="color:var(--ok)">étiquette visible : ${acces.join(' et ')}</span>` : ' · <span style="color:var(--danger)">étiquette masquée des deux côtés</span>') : ''}</dd>
     <dt>Sens</dt><dd>${c.renversable ? 'renversable' : 'sens obligatoire (ne pas retourner)'}${c.fragile ? ' · <strong>fragile</strong>' : ''}</dd>
     <dt>Position</dt><dd>x = ${nombre(placement.x, 1)}, y = ${nombre(placement.y, 1)}, z = ${nombre(placement.z, 1)} cm (coin) · sommet à ${nombre(placement.z + placement.dz, 1)} cm</dd>
     <dt>Repose sur</dt><dd>${placement.z <= 0.5 ? 'la palette' : (v.dessous.length ? v.dessous.join(', ') : '—')} · support ${Math.round(v.support * 100)} %</dd>
@@ -569,8 +570,8 @@ function plan2D(p) {
   }).join('');
   return `<svg class="plan-2d" width="${W + 40}" height="${H + 20}" viewBox="-20 -10 ${W + 40} ${H + 20}" xmlns="http://www.w3.org/2000/svg">
     <rect x="0" y="0" width="${W}" height="${H}" fill="#eef1f5" stroke="#14213d" stroke-width="2"/>${rects}
-    <text x="-6" y="${H / 2}" font-size="9" text-anchor="middle" transform="rotate(-90 -6 ${H / 2})" font-family="Arial">COULOIR</text>
-    <text x="${W + 8}" y="${H / 2}" font-size="9" text-anchor="middle" transform="rotate(90 ${W + 8} ${H / 2})" font-family="Arial">COULOIR</text>
+    <text x="${W / 2}" y="${H + 9}" font-size="9" text-anchor="middle" font-family="Arial">GAUCHE (y minimal) – accès IATA</text>
+    <text x="${W / 2}" y="-3" font-size="9" text-anchor="middle" font-family="Arial">DROITE (y maximal) – accès IATA</text>
   </svg>`;
 }
 function ouvrirFiche() {
@@ -595,7 +596,7 @@ function ouvrirFiche() {
         <div><div class="cle">Hauteur (cm)</div><div class="valeur">${nombre(p.hauteur, 1)}</div></div>
         <div><div class="cle">Colis</div><div class="valeur">${p.nombre_colis}</div></div>
       </div>
-      <p><strong>Matières dangereuses :</strong> ${iata.length ? iata.map((c) => `${echapper(c)} (${echapper(libelleClasse(c))})`).join(', ') + ' — étiquettes côté couloir' : 'aucune'}${p.classes.some((c) => ['ARME', 'SECU'].includes(c)) ? ' · <strong>armement</strong>' : ''}</p>
+      <p><strong>Matières dangereuses :</strong> ${iata.length ? iata.map((c) => `${echapper(c)} (${echapper(libelleClasse(c))})`).join(', ') + ' — étiquettes visibles depuis le côté gauche ou le côté droit' : 'aucune'}${p.classes.some((c) => ['ARME', 'SECU'].includes(c)) ? ' · <strong>armement</strong>' : ''}</p>
       ${plan2D(p)}
       <table><thead><tr><th>N° colis</th><th>Dimensions L × l × h (cm)</th><th>kg</th><th>Classe</th><th>Renversable</th><th>Posé X × Y × Z (cm)</th><th>Position x ; y ; z (cm)</th><th>Commentaire</th></tr></thead><tbody>${lignes}</tbody></table>
       ${avert}

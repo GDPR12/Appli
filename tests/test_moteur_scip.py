@@ -47,3 +47,51 @@ def test_scip_indisponible_est_ignore_proprement(monkeypatch):
     monkeypatch.setattr(moteur_scip, "disponible", lambda: (False, "absent"))
     res = optimiser(petite_liste(), Parametres(duree_recherche=0.5, moteur="scip"))
     assert res.moteur == "heuristique" and res.journal[1]["ignoree"] and "indisponible" in res.journal[1]["texte"]
+
+
+def _chargement(p, *boites):
+    from palettiseur import optimisation as opt
+    ch = opt._Chargement(p.types_palettes()[0])
+    for colis, x, y, z, dx, dy, dz in boites:
+        ch.boites.append(opt._Boite(colis, x, y, z, dx, dy, dz))
+    return ch
+
+
+def test_le_modele_expose_les_variables_d_acces_iata():
+    from palettiseur.iata import regles
+    p = Parametres(derogation_couloir=True)
+    ch = _chargement(p, (Colis("D", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50),
+                     (Colis("O", 50, 50, 50, 10), 100, 0, 0, 50, 50, 50),
+                     (Colis("E", 50, 50, 50, 10, classe="8"), 0, 100, 0, 50, 50, 50))
+    liste, _ = moteur_scip._indices_colis([ch])
+    c = moteur_scip._construire_modele([ch], liste, p, regles(), 5)
+    assert sorted(c["acces_gauche"]) == [0, 2] and sorted(c["acces_droite"]) == [0, 2]      # D et E sont dangereux
+    assert len(c["separations"]) == 3 * 2 * 3                                                 # 3 paires, 2 sens, 3 axes
+
+
+def _statut_avec_placement_fixe(p, boites):
+    from palettiseur.iata import regles
+    ch = _chargement(p, *boites)
+    liste, indice = moteur_scip._indices_colis([ch])
+    c = moteur_scip._construire_modele([ch], liste, p, regles(), 20)
+    moteur_scip.contraindre_amorce_heuristique(c, [ch], indice)       # fixe positions, orientations et côté d'accès
+    c["modele"].setObjective(0.0, "minimize")
+    c["modele"].optimize()
+    return str(c["modele"].getStatus())
+
+
+def test_scip_refuse_un_colis_dangereux_masque_des_deux_cotes():
+    p = Parametres(derogation_couloir=True)
+    dangereux = (Colis("M", 50, 50, 50, 10, classe="3"), 50, 100, 0, 50, 50, 50)
+    devant = (Colis("P", 30, 100, 50, 10), 60, 0, 0, 30, 100, 50)            # y 0-100 : masque le côté gauche
+    derriere = (Colis("Q", 30, 70, 50, 10), 60, 150, 0, 30, 70, 50)          # y 150-220 : masque le côté droit
+    assert _statut_avec_placement_fixe(p, [dangereux, devant, derriere]) == "infeasible"
+    assert _statut_avec_placement_fixe(p, [dangereux, devant]) == "optimal"   # reste visible côté droit
+
+
+def test_scip_accepte_deux_colis_dangereux_cote_a_cote():
+    """Côte à côte en x, ils ne se masquent pas : la contrainte ne doit pas être trop stricte."""
+    p = Parametres(derogation_couloir=True)
+    a = (Colis("A", 50, 50, 50, 10, classe="3"), 0, 100, 0, 50, 50, 50)
+    b = (Colis("B", 50, 50, 50, 10, classe="8"), 50, 100, 0, 50, 50, 50)
+    assert _statut_avec_placement_fixe(p, [a, b]) == "optimal"

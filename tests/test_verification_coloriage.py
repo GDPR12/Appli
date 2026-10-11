@@ -12,7 +12,7 @@ def palette_manuelle():
     pal.placements = [
         Placement(Colis("A", 100, 100, 50, 200), 0, 0, 0, 100, 100, 50),
         Placement(Colis("B", 100, 100, 50, 300), 0, 0, 50, 100, 100, 50),      # plus lourd sur plus léger
-        Placement(Colis("C", 50, 50, 50, 10, classe="3"), 100, 100, 0, 50, 50, 50),  # pas au bord
+        Placement(Colis("C", 50, 50, 50, 10, classe="3"), 100, 100, 0, 50, 50, 50),  # visible : rien devant ni derrière
         Placement(Colis("D", 50, 50, 50, 10, classe="5.1"), 150, 100, 0, 50, 50, 50),  # incompatible avec C
         Placement(Colis("E", 50, 50, 50, 10), 120, 0, 60, 50, 50, 50),   # flotte (support 0 %)
     ]
@@ -23,7 +23,23 @@ def test_verification_detecte_les_violations():
     pal = palette_manuelle()
     res = Resultat([pal], [], Parametres())
     codes = {m.code for m in verifier(res)}
-    assert {"lourd_sur_leger", "iata", "support", "iata_bord"} <= codes
+    assert {"lourd_sur_leger", "iata", "support"} <= codes
+    assert "iata_acces" not in codes        # C et D ne sont masqués d'aucun côté
+
+
+def test_verification_colis_iata_masque_des_deux_cotes():
+    t = Parametres().types_palettes()[0]
+    pal = Palette(1, t)
+    pal.placements = [
+        Placement(Colis("M", 50, 50, 50, 10, classe="3"), 50, 100, 0, 50, 50, 50),    # colis dangereux
+        Placement(Colis("P", 30, 100, 50, 10), 60, 0, 0, 30, 100, 50),                # devant (y plus petit)
+        Placement(Colis("Q", 30, 70, 50, 10), 60, 150, 0, 30, 70, 50),                # derrière (y plus grand)
+    ]
+    msgs = [m for m in verifier(Resultat([pal], [], Parametres())) if m.code == "iata_acces"]
+    assert len(msgs) == 1 and msgs[0].niveau == "erreur" and msgs[0].colis == ["M"]
+    # sans Q, le colis reste visible côté droit : plus d'erreur
+    pal.placements.pop()
+    assert not [m for m in verifier(Resultat([pal], [], Parametres())) if m.code == "iata_acces"]
 
 
 def test_verification_plan_valide_sans_erreur():

@@ -1,6 +1,6 @@
 /* ===================== Vue 3D des palettes (Three.js) =====================
- * Repère : X = largeur de la palette (faces côté couloir en x = 0 et x = L),
- * Y = longueur (sens de l'avion), Z = vertical. Unités : mètres dans la scène.
+ * Repère : X = largeur de la palette (bandes de passage de 20 cm en x = 0 et x = L),
+ * Y = longueur (sens de l'avion ; accès IATA « gauche » en y = 0 et « droite » en y = W), Z = vertical. Unités : mètres dans la scène.
  */
 import * as THREE from './vendor/three.module.min.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
@@ -195,11 +195,19 @@ export class Vue3D {
     env.position.set(L / 2, W / 2, H / 2);
     env.computeLineDistances();
     groupe.add(env);
-    // Repères « couloir »
-    for (const [x, ratio] of [[-marge - 0.18, 1], [L + marge + 0.18, 1]]) {
-      const s = spriteTexte('COULOIR', { taille: 40, fond: 'rgba(20,33,61,0.85)', couleur: '#ffffff' });
-      s.position.set(x, W / 2, 0.02);
-      s.scale.set(0.22 * s.userData.ratio * ratio, 0.22, 1);
+    // Bandes de passage (seulement si la largeur est réduite) et côtés d'accès IATA en y
+    if (marge > 0.005) {
+      for (const x of [-marge - 0.18, L + marge + 0.18]) {
+        const s = spriteTexte('PASSAGE', { taille: 40, fond: 'rgba(20,33,61,0.85)', couleur: '#ffffff' });
+        s.position.set(x, W / 2, 0.02);
+        s.scale.set(0.2 * s.userData.ratio, 0.2, 1);
+        groupe.add(s);
+      }
+    }
+    for (const [y, texte] of [[-0.2, 'ACCÈS GAUCHE'], [W + 0.2, 'ACCÈS DROITE']]) {
+      const s = spriteTexte(texte, { taille: 40, fond: 'rgba(185,28,28,0.88)', couleur: '#ffffff' });
+      s.position.set(L / 2, y, 0.02);
+      s.scale.set(0.2 * s.userData.ratio, 0.2, 1);
       groupe.add(s);
     }
     // Étiquette de la palette
@@ -221,7 +229,10 @@ export class Vue3D {
       const cle = `${pal.numero}|${p.colis.numero}`;
       mesh.userData = { cle, numero: p.colis.numero, palette: pal.numero };
       groupe.add(mesh);
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0x1f2937 }));
+      // Contour rouge pour les colis dangereux (IATA), comme dans la visualisation de CDP_2
+      const dangereux = !!((this.options.classes || {})[p.colis.classe] || {}).iata;
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
+        new THREE.LineBasicMaterial({ color: dangereux ? 0xdc2626 : 0x1f2937 }));
       edges.position.copy(mesh.position);
       groupe.add(edges);
       const sprite = spriteTexte(String(p.colis.numero), { taille: 44 });

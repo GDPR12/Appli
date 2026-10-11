@@ -1,35 +1,35 @@
-"""Palettisation en six phases, alignée sur le notebook ``CDP_1``.
+"""Palettisation en cinq phases, alignée sur le notebook ``CDP_2``.
 
 Pipeline (les numéros de phase sont ceux du notebook)
 ----------------------------------------------------
 
-1. **Placement heuristique** : construction par points extrêmes, choix de la
-   position par un score *lexicographique* (une priorité ne peut pas être
-   compensée par les suivantes) : palette déjà ouverte avant une nouvelle,
-   hausse de hauteur minimale, colis lourds bas, meilleur support, tas compact,
-   centre de masse centré. Plusieurs ordres de placement sont essayés (difficulté,
-   volume, masse du notebook, puis variantes) et la meilleure construction est
-   conservée.
-2. **Recherche SCIP** (facultative, ``moteur_scip.py``) : le placement heuristique
-   sert d'amorce (*warm start*) puis SCIP tente de réduire le nombre d'emplacements.
-3. **Fusion des palettes** : transferts de colis de la palette la moins remplie vers
-   la plus remplie pour en vider une.
-4. **Recentrage rigide et tassement** : le tas est translaté vers le centre puis chaque
-   colis glisse vers le centre tant que le chargement reste valide.
-5. **Minimisation des hauteurs**, palette par palette (SCIP si disponible, sinon
-   reconstruction de la palette avec plusieurs stratégies).
-6. **Finalisation** : dernier recentrage et tassement.
+1. **Placement heuristique** : construction par points extrêmes, choix de la position par un score
+   *lexicographique* (une priorité ne peut pas être compensée par les suivantes) : palette déjà ouverte avant
+   une nouvelle, colis IATA proche d'une extrémité en y, base la plus basse, hauteur de la palette, surface
+   couverte au sol, bandes libres, proximité des bords, support, compacité, centrage du centre de masse.
+   Les colis dangereux sont placés en premier. Plusieurs ordres de placement sont essayés (grande base,
+   difficulté, volume, masse du notebook, puis variantes) et la meilleure construction est conservée.
+2. **Recherche SCIP** (facultative, ``moteur_scip.py``) : le placement heuristique sert d'amorce (*warm start*)
+   puis SCIP tente de réduire le nombre d'emplacements.
+3. **Fusion des palettes** : transferts de colis de la palette la moins remplie vers la plus remplie pour en
+   vider une.
+4. **Tassement vertical** : chaque colis est replacé plus bas (autre position, autre orientation permise) tant
+   que le chargement reste valide ; les affectations aux palettes ne changent pas.
+5. **Recentrage et tassement horizontal** : le tas est translaté vers le centre, puis chaque colis glisse vers
+   le centre selon x et y ; les coordonnées z restent fixes.
 
-Règles du projet ajoutées au notebook
--------------------------------------
+Il n'y a plus de minimisation des hauteurs par SCIP : le notebook l'a remplacée par le tassement vertical.
 
-Aucun colis lourd sur un colis plus léger, rien sur un colis fragile, sens
-obligatoire, séparation IATA (tableau 9.3.A) et armement, colis IATA contre une
-face côté couloir, BIPAL/TRIPAL pour les colis trop longs, palettes de rampe (3 t).
-Ces règles sont vérifiées par ``_charge_valide`` après chaque phase qui déplace des colis.
+Règles du projet
+----------------
 
-Repère : cm et kg ; coin minimal (x1, y1, z1) de chaque colis ; x = largeur côté
-couloir, y = longueur, z = vertical.
+Règle IATA de CDP_2, absolue à chaque phase : deux classes incompatibles (tableau 9.3.A) ne partagent jamais une
+palette et chaque colis dangereux reste visible depuis au moins un des deux côtés en y (un autre colis ne le
+masque que si leurs projections se chevauchent en x et en z). Règles ajoutées par l'application : aucun colis
+lourd sur un colis plus léger, rien sur un colis fragile, sens obligatoire, armement, BIPAL/TRIPAL, rampe.
+Elles sont vérifiées par ``_charge_valide`` après chaque phase qui déplace des colis.
+
+Repère : cm et kg ; coin minimal (x1, y1, z1) de chaque colis ; x = largeur, y = longueur, z = vertical.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from operator import itemgetter
 from time import perf_counter
 from typing import Iterable
 
-from .geometrie import orientations, tient_dans
+from .geometrie import TOL_VISIBLE, orientations, tient_dans
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
 from .modeles import Colis, Etape, Palette, Parametres, Placement, Resultat, TypePalette
 
@@ -152,6 +152,33 @@ def _support_ok(b: _Boite, boites: list[_Boite], params: Parametres, exclu: _Boi
     return aire >= params.support_minimal * b.dx * b.dy - TOL
 
 
+def _cotes_visibles(b: _Boite, boites: list[_Boite], precision: float = TOL_VISIBLE) -> tuple[str, ...]:
+    """Côtés (« gauche » : y minimal, « droite » : y maximal) depuis lesquels ``b`` reste visible.
+
+    Même règle que ``geometrie.cotes_visibles`` (notebook CDP_2) sur les boîtes internes, pour les boucles rapides.
+    """
+    gauche = droite = True
+    for o in boites:
+        if o is b:
+            continue
+        if min(b.x2, o.x2) - max(b.x1, o.x1) > precision and min(b.z2, o.z2) - max(b.z1, o.z1) > precision:
+            if o.y1 < b.y1 - precision:
+                gauche = False
+            if o.y2 > b.y2 + precision:
+                droite = False
+            if not gauche and not droite:
+                return ()
+    return tuple(cote for cote, libre in (("gauche", gauche), ("droite", droite)) if libre)
+
+
+def _iata_ok(boites: list[_Boite], params: Parametres, nouveau: _Boite | None = None) -> bool:
+    """Tous les colis IATA du chargement (avec ``nouveau`` s'il est donné) restent visibles d'au moins un côté."""
+    if not params.iata_acces:
+        return True
+    tous = boites if nouveau is None else boites + [nouveau]
+    return all(_cotes_visibles(b, tous) for b in tous if b.iata)
+
+
 def _charge_valide(ch: _Chargement, params: Parametres, regles: ReglesSeparation) -> bool:
     """Contrôle indépendant d'une palette : masse, volume, chevauchement, support, règles IATA."""
     t, bs = ch.type, ch.boites
@@ -164,12 +191,15 @@ def _charge_valide(ch: _Chargement, params: Parametres, regles: ReglesSeparation
         for b in bs[i + 1:]:
             if _se_chevauchent(a, b) or not regles.compatibles(a.colis.classe, b.colis.classe):
                 return False
-    return all(_support_ok(b, bs, params) for b in bs)
+    return all(_support_ok(b, bs, params) for b in bs) and _iata_ok(bs, params)
 
 
 def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float,
                      dx: float, dy: float, dz: float, params: Parametres) -> bool:
-    """Un colis peut-il être posé en (x, y, z) sur la palette ? (masse et classes à tester à part)."""
+    """Un colis peut-il être posé en (x, y, z) sur la palette ? (masse et classes à tester à part)
+
+    Contrôle les limites, les collisions, le support, les règles de masse et de fragilité, et la visibilité
+    des colis IATA (celui qu'on pose, comme ceux déjà en place)."""
     t = ch.type
     if x < -TOL or y < -TOL or z < -TOL or x + dx > t.largeur + TOL or y + dy > t.longueur + TOL \
             or z + dz > t.hauteur_max + TOL:
@@ -186,7 +216,11 @@ def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float
                 aire += (min(o.x2, x2) - max(o.x1, x)) * (min(o.y2, y2) - max(o.y1, y))
             if abs(o.z1 - z2) <= TOL and (colis.fragile or o.colis.masse > params.facteur_masse * colis.masse + TOL):
                 return False        # o reposerait sur ce colis (porte-à-faux) : trop lourd ou colis fragile
-    return z <= TOL or aire >= params.support_minimal * dx * dy - TOL
+    if z > TOL and aire < params.support_minimal * dx * dy - TOL:
+        return False
+    if params.iata_acces and (classe_de(colis.classe).iata or any(o.iata for o in ch.boites)):
+        return _iata_ok(ch.boites, params, _Boite(colis, x, y, z, dx, dy, dz))
+    return True
 
 
 def _classes_compatibles(ch: _Chargement, colis: Colis, regles: ReglesSeparation) -> bool:
@@ -203,12 +237,11 @@ def _classes_compatibles(ch: _Chargement, colis: Colis, regles: ReglesSeparation
 _PAR_Z_Y_X = itemgetter(2, 1, 0)
 
 
-def _candidats(boites: list[_Boite], L: float, W: float, dx: float, dy: float,
-               forcer_bord: bool = False) -> list[tuple[float, float, float]]:
+def _candidats(boites: list[_Boite], L: float, W: float, dx: float,
+               dy: float) -> list[tuple[float, float, float]]:
     """Coins du plateau, faces voisines au sol et dessus des colis, triés par (z, y, x).
 
     Même ensemble que ``positions_candidates`` du notebook, en coordonnées du coin minimal.
-    Pour un colis IATA, des copies contre chaque face côté couloir sont ajoutées.
     """
     xmax, ymax = L - dx, W - dy
     lx, ly = xmax + TOL, ymax + TOL
@@ -237,16 +270,12 @@ def _candidats(boites: list[_Boite], L: float, W: float, dx: float, dy: float,
                 for y in ys_al:
                     if -TOL <= y <= ly:
                         ajout((x, y, z))
-    if forcer_bord:
-        for x, y, z in list(sortie):
-            ajout((0.0, y, z))
-            ajout((xmax, y, z))
     return sorted({(round(min(max(x, 0.0), xmax), 4), round(min(max(y, 0.0), ymax), 4), z)
                    for x, y, z in sortie}, key=_PAR_Z_Y_X)
 
 
-def _ancrages_dbl(boites: list[_Boite], L: float, W: float, dx: float, dy: float,
-                  forcer_bord: bool) -> list[tuple[float, float, float]]:
+def _ancrages_dbl(boites: list[_Boite], L: float, W: float, dx: float,
+                  dy: float) -> list[tuple[float, float, float]]:
     """Ancrages « coins » (coins du plateau et des colis déjà posés), sans hauteur : la chute la calcule."""
     xmax, ymax = L - dx, W - dy
     pts = {(0.0, 0.0), (xmax, 0.0), (0.0, ymax), (xmax, ymax)}
@@ -255,10 +284,6 @@ def _ancrages_dbl(boites: list[_Boite], L: float, W: float, dx: float, dy: float
             pts.add((ax, ay))
             pts.add((xmax, ay))
             pts.add((ax, ymax))
-    if forcer_bord:
-        for x, y in list(pts):
-            pts.add((0.0, y))
-            pts.add((xmax, y))
     return [(round(x, 4), round(y, 4), 0.0) for x, y in pts
             if -TOL <= x <= xmax + TOL and -TOL <= y <= ymax + TOL]
 
@@ -268,9 +293,11 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                         seuil: tuple | None, cpt: _Compteur):
     """Meilleure position du colis sur la palette, strictement meilleure que ``seuil`` (sinon None).
 
-    Score lexicographique du notebook : (hausse de hauteur, colis lourd bas m·z, -support,
-    compacité du tas, centrage du centre de masse, distance au centre). Un colis IATA
-    préfère d'abord une position contre une face côté couloir.
+    Variante ``cdp`` : score lexicographique de CDP_2, dans cet ordre : distance d'un colis IATA à l'extrémité
+    la plus proche en y, base la plus basse, hauteur de la palette, surface couverte au sol, plus grande
+    bande libre, somme des carrés des bandes libres, distance aux bords, support, compacité du tas, centrage
+    du centre de masse, distance au centre. Les autres variantes sont des stratégies complémentaires de
+    l'application. Toute position doit laisser visibles les colis IATA (celui qu'on pose et ceux en place).
     """
     t = ch.type
     L, W, H = t.largeur, t.longueur, t.hauteur_max
@@ -279,7 +306,8 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
     if ch.masse + m > t.masse_max + TOL or not _classes_compatibles(ch, colis, regles):
         return None
     jeu, facteur, support_min = params.jeu_contact, params.facteur_masse, params.support_minimal
-    iata = params.iata_au_bord and classe_de(colis.classe).iata
+    iata = classe_de(colis.classe).iata
+    controle_iata = params.iata_acces and (iata or any(b.iata for b in bs))
     donnees = [(b.x1, b.x2, b.y1, b.y2, b.z1, b.z2, b.colis.masse, b.colis.fragile) for b in bs]
     hauteur0 = max((d[5] for d in donnees), default=0.0)
     masse0 = sum(d[6] for d in donnees)
@@ -290,6 +318,10 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
         bymin, bymax = min(d[2] for d in donnees), max(d[3] for d in donnees)
     else:
         bxmin = bxmax = bymin = bymax = 0.0
+    sol = [d for d in donnees if d[4] <= TOL]          # colis posés sur le plateau
+    if sol:
+        sx1, sx2 = min(d[0] for d in sol), max(d[1] for d in sol)
+        sy1, sy2 = min(d[2] for d in sol), max(d[3] for d in sol)
     masse_tot = masse0 + m
     variante = strat.variante
     dbl = variante.startswith("dbl")
@@ -300,9 +332,9 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
         if dx > L + TOL or dy > W + TOL or dz > H + TOL:
             continue
         if variante in ("dbl", "dbl_libre"):
-            candidats = _ancrages_dbl(bs, L, W, dx, dy, iata)
+            candidats = _ancrages_dbl(bs, L, W, dx, dy)
         else:
-            candidats = _candidats(bs, L, W, dx, dy, iata)
+            candidats = _candidats(bs, L, W, dx, dy)
         if dbl:
             # « le plus bas, le plus au fond » : chaque position est testée après chute jusqu'au sommet
             # le plus haut sous l'empreinte, ce qui remplit les couches sans vides.
@@ -320,20 +352,20 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
             z2 = z + dz
             if z2 > H + TOL:
                 break                            # candidats triés par z croissant
-            if dbl:
-                primaire = z                     # variantes dbl : on minimise d'abord la hauteur de pose
+            if dbl or variante == "cdp":
+                primaire = z                     # on minimise d'abord la hauteur de pose
             else:
                 primaire = z2 - hauteur0 if z2 > hauteur0 else 0.0
-            # Sans contrainte de bord, la clé croît avec z : on s'arrête dès qu'une meilleure est connue.
+            # Hors colis IATA, la clé croît avec z : on s'arrête dès qu'une meilleure est connue.
             if not iata:
                 if meilleur is not None and primaire > meilleur[0][1] + 1e-6:
                     break
                 if seuil_k is not None and primaire > seuil_k[1] + 1e-6:
                     break
             x2, y2 = x + dx, y + dy
-            hors_bord = 1 if (iata and not (x <= jeu or x2 >= L - jeu)) else 0
-            hausse = round(primaire, 6)
-            cle = (hors_bord, hausse)
+            # Un colis IATA se range d'abord contre l'une des deux extrémités en y (préférence de CDP_2).
+            distance_iata = round(min(y, W - y2), 6) if iata else 0.0
+            cle = (distance_iata, round(primaire, 6))
             if meilleur is not None and cle > meilleur[0][:2]:
                 continue
             if seuil_k is not None and cle > seuil_k:
@@ -366,24 +398,40 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
             if z > TOL and aire < support_min * base - TOL:
                 continue
             support = 1.0 if z <= TOL else aire / base
-            mz = m * (z + dz / 2)
             compacite = ((max(bxmax, x2) - min(bxmin, x)) * (max(bymax, y2) - min(bymin, y))) / (L * W) \
                 if donnees else base / (L * W)
             cmx = (mx0 + m * (x + dx / 2)) / masse_tot
             cmy = (my0 + m * (y + dy / 2)) / masse_tot
             centrage = abs(cmx - L / 2) / L + abs(cmy - W / 2) / W
             distance = abs(x + dx / 2 - L / 2) + abs(y + dy / 2 - W / 2)
-            reste = (round(mz, 4), round(-support, 6), round(compacite, 6), round(centrage, 6), round(distance, 4))
             if dbl:
                 pref = 0.0 if variante == "dbl_libre" else dz
                 score = cle + (pref, round(y, 3), round(x, 3), round(-support, 6))
-            elif variante == "plat":
-                score = cle + (dz,) + reste
-            elif variante == "contact":
-                score = cle + (-round(contact, 3),) + reste
+            elif variante == "cdp":
+                au_sol = z <= TOL
+                gain_surface = base / (L * W) if au_sol else 0.0
+                # Bande libre de chaque côté du tas posé au sol : on évite de la fragmenter.
+                if au_sol:
+                    ex1, ex2, ey1, ey2 = (min(sx1, x), max(sx2, x2), min(sy1, y), max(sy2, y2)) if sol else (x, x2, y, y2)
+                    bandes = (ex1 * W, (L - ex2) * W, ey1 * L, (W - ey2) * L)
+                elif sol:
+                    bandes = (sx1 * W, (L - sx2) * W, sy1 * L, (W - sy2) * L)
+                else:
+                    bandes = (L * W,)
+                distance_bords = min(x, L - x2) + min(y, W - y2)
+                score = cle + (round(max(hauteur0, z2), 6), -round(gain_surface, 8), -round(max(bandes), 4),
+                               -round(sum(b * b for b in bandes), 2), round(distance_bords, 6),
+                               round(-support, 6), round(compacite, 6), round(centrage, 6), round(distance, 4))
             else:
-                score = cle + reste
+                reste = (round(m * (z + dz / 2), 4), round(-support, 6), round(compacite, 6),
+                         round(centrage, 6), round(distance, 4))
+                if variante == "plat":
+                    score = cle + (dz,) + reste
+                else:       # "contact"
+                    score = cle + (-round(contact, 3),) + reste
             if meilleur is None or score < meilleur[0]:
+                if controle_iata and not _iata_ok(bs, params, _Boite(colis, x, y, z, dx, dy, dz)):
+                    continue
                 meilleur = (score, x, y, z, dx, dy, dz, oi)
     return meilleur
 
@@ -406,36 +454,52 @@ def _type_rampe(params: Parametres, base: TypePalette) -> TypePalette:
 
 
 def _ordre_placement(a_placer: list[tuple[Colis, TypePalette]], params: Parametres, strat: Strategie,
-                     rng: random.Random) -> list[tuple[Colis, TypePalette]]:
-    """Ordre de placement : colis exigeant une BIPAL/TRIPAL d'abord, puis selon la stratégie."""
+                     rng: random.Random, regles: ReglesSeparation) -> list[tuple[Colis, TypePalette]]:
+    """Ordre de placement : colis exigeant une BIPAL/TRIPAL d'abord, puis les colis dangereux (les plus
+    incompatibles en premier, comme ``priorite_iata`` de CDP_2), puis selon la stratégie."""
     surface_palette = min(t.surface for t in params.types_palettes())
     cols = [c for c, _ in a_placer]
     max_m = max(c.masse for c in cols)
     max_v = max(c.volume for c in cols)
     max_d = max(max(c.longueur, c.largeur, c.hauteur) for c in cols)
+    matrice = regles.matrice()
 
     def face(c: Colis) -> float:
         return max(c.longueur * c.largeur, c.longueur * c.hauteur, c.largeur * c.hauteur)
 
+    def base_max(c: Colis) -> float:
+        """Plus grande base posable : tient compte du sens obligatoire (CDP_2, ordre 1)."""
+        return max(dx * dy for dx, dy, _ in orientations(c))
+
+    def priorite_iata(c: Colis) -> tuple[int, int]:
+        if not classe_de(c.classe).iata:
+            return (0, 0)
+        # « 9L » est un synonyme de « 9 » : on ne le compte pas deux fois
+        return (1, sum(1 for autre in matrice.get(c.classe, []) if autre != "9L"))
+
+    rang = {id(c): i for i, (c, _) in enumerate(a_placer)}
+
     def cle(item: tuple[Colis, TypePalette]):
         c, t = item
         bruit = 1.0 + strat.bruit * (rng.random() - 0.5) * 2 if strat.bruit else 1.0
-        if strat.tri == "difficulte":    # formule du notebook
+        # Les quatre ordres de CDP_2 n'ont pas de critère secondaire : à égalité, on garde l'ordre de saisie.
+        if strat.tri == "difficulte":
             k = (-(4 * c.volume / max_v + 3 * face(c) / surface_palette + 2 * c.masse / max_m
                    + max(c.longueur, c.largeur, c.hauteur) / max_d) * bruit,)
         elif strat.tri == "volume":
-            k = (-c.volume * bruit, -c.masse)
+            k = (-c.volume * bruit,)
         elif strat.tri == "masse":
-            k = (-c.masse * bruit, -c.volume)
+            k = (-c.masse * bruit,)
         elif strat.tri == "base":
-            k = (-face(c) * bruit, -c.masse)
+            k = (-base_max(c) * bruit, -c.masse)
         elif strat.tri == "hauteur":
             k = (-min(c.longueur, c.largeur, c.hauteur) * bruit, -c.masse)
         elif strat.tri == "special":
             k = (0 if c.special else 1, -c.masse * bruit, -c.volume)
         else:                            # "densite"
             k = (-(c.masse / face(c)) * bruit, -c.volume)
-        return (-t.positions,) + k + (c.numero,)
+        dangereux, incompatibilites = priorite_iata(c)
+        return (-t.positions, -dangereux, -incompatibilites) + k + (rang[id(c)],)
 
     return sorted(a_placer, key=cle)
 
@@ -483,27 +547,32 @@ def _construire(ordre: list[tuple[Colis, TypePalette]], params: Parametres, regl
 
 
 def _objectif(chs: list[_Chargement], echecs: int, params: Parametres) -> tuple:
-    """Comparaison lexicographique des constructions (plus petit = meilleur)."""
+    """Comparaison lexicographique des constructions (plus petit = meilleur).
+
+    Colis non placés, emplacements, palettes, puis la clé de CDP_2 : hauteur globale, surface couverte au sol
+    (la plus grande), somme des hauteurs, décentrage des centres de masse.
+    """
     positions = sum(ch.type.positions for ch in chs)
-    bord, dispersion = 0, 0.0
+    dispersion, surface = 0.0, 0.0
     for ch in chs:
         L, W = ch.type.largeur, ch.type.longueur
-        if params.iata_au_bord:
-            bord += sum(1 for b in ch.boites
-                        if b.iata and not (b.x1 <= params.jeu_contact or b.x2 >= L - params.jeu_contact))
+        surface += sum(b.dx * b.dy for b in ch.boites if b.z1 <= TOL)
         masse = ch.masse
         if masse > 0:
             cx = sum(b.colis.masse * (b.x1 + b.x2) / 2 for b in ch.boites) / masse
             cy = sum(b.colis.masse * (b.y1 + b.y2) / 2 for b in ch.boites) / masse
             dispersion += abs(cx - L / 2) / L + abs(cy - W / 2) / W
-    return (echecs, positions, len(chs), bord, round(sum(ch.hauteur for ch in chs), 1), round(dispersion, 4))
+    hauteur_globale = max((ch.hauteur for ch in chs), default=0.0)
+    return (echecs, positions, len(chs), round(hauteur_globale, 1), -round(surface, 1),
+            round(sum(ch.hauteur for ch in chs), 1), round(dispersion, 4))
 
 
 def strategies_deterministes() -> list[Strategie]:
-    """Ordre d'essai des stratégies : les trois ordres du notebook (score sur toutes les palettes),
-    puis le remplissage « le plus bas, le plus au fond » palette par palette, puis les autres variantes."""
-    ordres = ("difficulte", "volume", "masse", "base", "hauteur", "densite", "special")
-    liste = [Strategie(t, "cdp") for t in ordres[:3]]
+    """Ordre d'essai des stratégies : les quatre ordres de CDP_2 (grande base, difficulté, volume, masse, avec le
+    score du notebook sur toutes les palettes), puis le remplissage « le plus bas, le plus au fond » palette par
+    palette, puis les autres variantes."""
+    ordres = ("base", "difficulte", "volume", "masse", "hauteur", "densite", "special")
+    liste = [Strategie(t, "cdp") for t in ordres[:4]]
     for variante in ("dbl", "dbl_libre", "dbl_cdp", "cdp", "plat", "contact"):
         liste += [Strategie(t, variante, "premiere") for t in ordres]
     for palette in ("score",):
@@ -526,7 +595,7 @@ def _placement_heuristique(a_placer, params, regles, duree, rng):
     meilleur, meilleur_obj, essais = None, None, []
     sans_amelioration, i = 0, 0
     while True:
-        # Les 12 premières stratégies sont déterministes (dont les trois ordres du notebook) ; ensuite on
+        # Les 12 premières stratégies sont déterministes (dont les quatre ordres du notebook) ; ensuite on
         # alterne la liste déterministe et des variantes bruitées des 30 stratégies les plus prometteuses.
         if i < 12 or (i % 2 == 0 and (i - 12) // 2 + 12 < len(strategies)):
             strat = strategies[i if i < 12 else (i - 12) // 2 + 12]
@@ -534,11 +603,11 @@ def _placement_heuristique(a_placer, params, regles, duree, rng):
             base = strategies[rng.randrange(min(30, len(strategies)))]
             strat = Strategie(base.tri, base.variante, base.palette, rng.choice((0.1, 0.25, 0.5)))
         i += 1
-        ordre = _ordre_placement(a_placer, params, strat, rng)
+        ordre = _ordre_placement(a_placer, params, strat, rng, regles)
         debut_c = cpt.positions
         chs, echecs = _construire(ordre, params, regles, strat, cpt)
         obj = _objectif(chs, len(echecs), params)
-        if i <= 3:
+        if i <= 4:
             essais.append({"strategie": str(strat), "palettes": len(chs), "positions": sum(c.type.positions for c in chs),
                            "hauteur": round(sum(c.hauteur for c in chs), 1), "positions_testees": cpt.positions - debut_c})
         if meilleur_obj is None or obj < meilleur_obj:
@@ -546,7 +615,7 @@ def _placement_heuristique(a_placer, params, regles, duree, rng):
         else:
             sans_amelioration += 1
         ecoule = perf_counter() - debut
-        if ecoule >= duree and (i >= 3 or ecoule >= 4 * duree):
+        if ecoule >= duree and (i >= 4 or ecoule >= 4 * duree):
             break
         if i >= 2 * len(strategies) and sans_amelioration >= 300:
             break
@@ -568,43 +637,27 @@ def _reste_valide_sans(ch: _Chargement, original: _Boite, params: Parametres) ->
     return True
 
 
-def _au_bord(x1: float, x2: float, L: float, jeu: float) -> bool:
-    return x1 <= jeu or x2 >= L - jeu
-
-
 def _placer_dans(dest: _Chargement, colis: Colis, params: Parametres, regles: ReglesSeparation,
-                 exiger_bord: bool = False, compteur: list[int] | None = None):
+                 compteur: list[int] | None = None):
     """Première position valide (la plus basse) d'un colis sur la palette, toutes orientations permises.
 
-    Retourne (clé, x, y, z, dx, dy, dz, orientation) ou None. Un colis IATA essaie d'abord les positions
-    contre une face côté couloir ; ``exiger_bord`` interdit les autres. Masse et classes sont contrôlées.
+    Retourne (clé, x, y, z, dx, dy, dz, orientation) ou None. Masse, classes, support et visibilité des colis
+    IATA sont contrôlés ; un colis IATA préfère l'extrémité de la palette en y.
     """
     t = dest.type
     if dest.masse + colis.masse > t.masse_max + TOL or not _classes_compatibles(dest, colis, regles):
         return None
-    jeu = params.jeu_contact
-    iata = params.iata_au_bord and classe_de(colis.classe).iata
+    iata = classe_de(colis.classe).iata
     meilleur = None
     for oi, (dx, dy, dz) in enumerate(orientations(colis)):
         if dx > t.largeur + TOL or dy > t.longueur + TOL or dz > t.hauteur_max + TOL:
             continue
-        candidats = _candidats(dest.boites, t.largeur, t.longueur, dx, dy, iata)
-        listes = [candidats]
-        if iata:
-            bord = [c for c in candidats if _au_bord(c[0], c[0] + dx, t.largeur, jeu)]
-            listes = [bord] if exiger_bord else [bord, candidats]
-        for liste in listes:
-            trouve = None
-            for x, y, z in liste:
-                if compteur is not None:
-                    compteur[0] += 1
-                if _position_valide(dest, colis, x, y, z, dx, dy, dz, params):
-                    trouve = (x, y, z)
-                    break
-            if trouve is not None:
-                x, y, z = trouve
-                hb = 1 if (iata and not _au_bord(x, x + dx, t.largeur, jeu)) else 0
-                cle = (hb, z, abs(x + dx / 2 - t.largeur / 2) + abs(y + dy / 2 - t.longueur / 2))
+        for x, y, z in _candidats(dest.boites, t.largeur, t.longueur, dx, dy):
+            if compteur is not None:
+                compteur[0] += 1
+            if _position_valide(dest, colis, x, y, z, dx, dy, dz, params):
+                distance_iata = round(min(y, t.longueur - (y + dy)), 6) if iata else 0.0
+                cle = (distance_iata, z, abs(x + dx / 2 - t.largeur / 2) + abs(y + dy / 2 - t.longueur / 2))
                 if meilleur is None or cle < meilleur[0]:
                     meilleur = (cle, x, y, z, dx, dy, dz, oi)
                 break
@@ -696,10 +749,9 @@ def _fusionner(chs: list[_Chargement], params: Parametres, regles: ReglesSeparat
 def _recentrer(chs: list[_Chargement], params: Parametres) -> None:
     """Translate chaque tas pour centrer son centre de masse, sans changer ses contacts.
 
-    La translation est limitée par les bords de la palette et ne décolle pas un colis
-    IATA de la face côté couloir contre laquelle il est posé.
+    La translation est limitée par les bords de la palette ; les positions relatives ne changent pas, donc la
+    visibilité des colis IATA non plus.
     """
-    jeu = params.jeu_contact
     for ch in chs:
         bs = ch.boites
         if not bs:
@@ -710,15 +762,6 @@ def _recentrer(chs: list[_Chargement], params: Parametres) -> None:
         cy = sum(b.colis.masse * (b.y1 + b.y2) / 2 for b in bs) / masse
         bas_x, haut_x = max(-b.x1 for b in bs), min(L - b.x2 for b in bs)
         bas_y, haut_y = max(-b.y1 for b in bs), min(W - b.y2 for b in bs)
-        if params.iata_au_bord:
-            for b in bs:
-                if not b.iata:
-                    continue
-                gauche, droite = b.x1 <= jeu, b.x2 >= L - jeu
-                if gauche and not droite:
-                    haut_x = min(haut_x, jeu - b.x1)
-                elif droite and not gauche:
-                    bas_x = max(bas_x, (L - jeu) - b.x2)
         tx = min(max(L / 2 - cx, bas_x), haut_x) if bas_x <= haut_x else 0.0
         ty = min(max(W / 2 - cy, bas_y), haut_y) if bas_y <= haut_y else 0.0
         for b in bs:
@@ -729,7 +772,9 @@ def _deplacement_valide(ch: _Chargement, b: _Boite, params: Parametres) -> bool:
     bs = ch.boites
     if not _support_ok(b, bs, params):
         return False
-    return all(_support_ok(c, bs, params) for c in bs if c is not b and abs(c.z1 - b.z2) <= TOL)
+    if not all(_support_ok(c, bs, params) for c in bs if c is not b and abs(c.z1 - b.z2) <= TOL):
+        return False
+    return _iata_ok(bs, params)         # le glissement ne doit masquer aucun colis IATA des deux côtés
 
 
 def _glisser(ch: _Chargement, b: _Boite, axe: str, params: Parametres, precision: float) -> float:
@@ -741,8 +786,6 @@ def _glisser(ch: _Chargement, b: _Boite, axe: str, params: Parametres, precision
     ecart = centre_palette - centre
     if abs(ecart) <= precision:
         return 0.0
-    if x_axe and params.iata_au_bord and b.iata and (b.x1 <= params.jeu_contact or b.x2 >= L - params.jeu_contact):
-        return 0.0      # un colis IATA reste contre sa face côté couloir
     sens = 1.0 if ecart > 0 else -1.0
     dmax = abs(ecart)
     for o in ch.boites:
@@ -802,103 +845,124 @@ def _tasser(chs: list[_Chargement], params: Parametres, precision: float = 0.1, 
 
 
 # ---------------------------------------------------------------------------
-# Phase 5 : minimisation des hauteurs (version heuristique)
+# Phase 4 : tassement vertical
 # ---------------------------------------------------------------------------
 
-def _delester(chs: list[_Chargement], params: Parametres, regles: ReglesSeparation, limite: float) -> dict:
-    """Abaisse la palette la plus haute en déplaçant ses colis du sommet vers l'espace libre des autres.
+def _positions_xy(b: _Boite, dx: float, dy: float, restants: list[_Boite], t: TypePalette) -> list[tuple[float, float]]:
+    """Alignements possibles d'un colis de base dx × dy : plateau, centre, position actuelle, faces des autres colis.
 
-    Un déplacement est retenu si la hauteur perdue par la palette source dépasse la hauteur gagnée par
-    la palette d'arrivée (la somme des hauteurs baisse), ou s'il ne coûte aucune hauteur et loge le
-    colis sous le sommet de l'arrivée. Le nombre de palettes ne change pas.
+    Trié par déplacement croissant depuis la position actuelle, pour préférer les petits mouvements.
+    """
+    xmax, ymax = t.largeur - dx, t.longueur - dy
+    xs = {0.0, xmax, xmax / 2, b.x1}
+    ys = {0.0, ymax, ymax / 2, b.y1}
+    for o in restants:
+        xs.update((o.x1, o.x2, o.x1 - dx, o.x2 - dx))
+        ys.update((o.y1, o.y2, o.y1 - dy, o.y2 - dy))
+    xs = sorted({round(min(max(x, 0.0), xmax), 4) for x in xs if -TOL <= x <= xmax + TOL})
+    ys = sorted({round(min(max(y, 0.0), ymax), 4) for y in ys if -TOL <= y <= ymax + TOL})
+    return sorted(((x, y) for x in xs for y in ys), key=lambda xy: (abs(xy[0] - b.x1) + abs(xy[1] - b.y1), xy))
+
+
+def _tasser_vertical(chs: list[_Chargement], params: Parametres, limite: float) -> dict:
+    """Replace chaque colis plus bas : autre position (x, y), autre orientation permise (CDP_2, cellule 14).
+
+    Recherche de dispositions finales, pas d'une trajectoire de manutention. Les affectations aux palettes ne
+    changent pas. Chaque déplacement abaisse strictement la base du colis sans relever son sommet ; il est
+    accepté seulement si le chargement reste valide (collisions, support à 90 %, masse, IATA) et si le retrait
+    du colis ne laisse aucun autre colis sans appui. Plusieurs passages permettent de retirer un support après
+    les colis qu'il portait.
     """
     debut = perf_counter()
-    avant = sum(c.hauteur for c in chs)
-    deplaces = 0
-    jeu = params.jeu_contact
-    progression = True
-    while progression and len(chs) > 1 and perf_counter() - debut < limite:
-        progression = False
-        for src in sorted(chs, key=lambda c: -c.hauteur):
-            h_src = src.hauteur
-            sommets = sorted((b for b in src.boites if b.z2 >= h_src - TOL), key=lambda b: -b.colis.masse)
-            for b in sommets:
-                if perf_counter() - debut >= limite:
+    hauteur_avant = max((c.hauteur for c in chs), default=0.0)
+    somme_avant = sum(c.hauteur for c in chs)
+    mouvements = essais = passages = supports_bloquants = 0
+    descente = lateral = 0.0
+    modifies: set[int] = set()
+    limite_atteinte = False
+    support_min = params.support_minimal
+
+    def expire() -> bool:
+        return perf_counter() - debut >= limite
+
+    for ch in chs:
+        t = ch.type
+        for _ in range(max(1, len(ch.boites))):
+            mouvement_passage = False
+            for b in sorted(ch.boites, key=lambda o: (-o.z2, o.colis.numero)):
+                if expire():
+                    limite_atteinte = True
                     break
-                if not _reste_valide_sans(src, b, params):
+                bas, sommet = b.z1, b.z2
+                if bas <= TOL:
                     continue
-                h_apres = max((o.z2 for o in src.boites if o is not b), default=0.0)
-                gain = h_src - h_apres
-                exiger = params.iata_au_bord and b.iata and _au_bord(b.x1, b.x2, src.type.largeur, jeu)
+                if not _reste_valide_sans(ch, b, params):      # le retrait laisserait un colis sans appui
+                    supports_bloquants += 1
+                    continue
+                toutes = ch.boites
+                restants = [o for o in toutes if o is not b]
+                niveaux = sorted({0.0} | {o.z2 for o in restants if o.z2 < bas - TOL})
+                orientations_b = sorted(enumerate(orientations(b.colis)),
+                                        key=lambda e: (e[1][2], -e[1][0] * e[1][1], e[1][0], e[1][1]))
                 choix = None
-                for dest in chs:
-                    if dest is src:
-                        continue
-                    res = _placer_dans(dest, b.colis, params, regles, exiger_bord=exiger)
-                    if res is None:
-                        continue
-                    _, x, y, z, dx, dy, dz, oi = res
-                    h_dest = dest.hauteur
-                    cout = max(0.0, z + dz - h_dest)
-                    net = gain - cout
-                    sous_sommet = z + dz < h_dest - TOL
-                    if (gain > 0.01 and net > 0.01) or (cout <= TOL and sous_sommet):
-                        cle = (-net, z)
-                        if choix is None or cle < choix[0]:
-                            choix = (cle, dest, res)
+                ch.boites = restants                              # _position_valide ignore ainsi le colis déplacé
+                try:
+                    grilles: dict[tuple[float, float], list[tuple[float, float]]] = {}
+                    for niveau in niveaux:
+                        for oi, (dx, dy, dz) in orientations_b:
+                            if niveau + dz > sommet + TOL or dx > t.largeur + TOL or dy > t.longueur + TOL:
+                                continue
+                            if (dx, dy) not in grilles:
+                                grilles[dx, dy] = _positions_xy(b, dx, dy, restants, t)
+                            # filtres rapides avant la validation complète : collisions et appui à ce niveau
+                            obstacles = [o for o in restants if o.z1 < niveau + dz - TOL and o.z2 > niveau + TOL]
+                            portants = [o for o in restants if abs(o.z2 - niveau) <= TOL] if niveau > TOL else []
+                            for x, y in grilles[dx, dy]:
+                                if expire():
+                                    limite_atteinte = True
+                                    break
+                                essais += 1
+                                x2, y2 = x + dx, y + dy
+                                if any(o.x1 < x2 - TOL and o.x2 > x + TOL and o.y1 < y2 - TOL and o.y2 > y + TOL
+                                       for o in obstacles):
+                                    continue
+                                if niveau > TOL:
+                                    aire = sum(max(0.0, min(o.x2, x2) - max(o.x1, x)) * max(0.0, min(o.y2, y2) - max(o.y1, y))
+                                               for o in portants)
+                                    if aire < support_min * dx * dy - TOL:
+                                        continue
+                                if _position_valide(ch, b.colis, x, y, niveau, dx, dy, dz, params):
+                                    choix = (x, y, niveau, dx, dy, dz, oi)
+                                    break
+                            if choix is not None or limite_atteinte:
+                                break
+                        if choix is not None or limite_atteinte:
+                            break
+                finally:
+                    ch.boites = toutes
                 if choix is not None:
-                    _, dest, (_, x, y, z, dx, dy, dz, oi) = choix
-                    dest.boites.append(_Boite(b.colis, x, y, z, dx, dy, dz, oi))
-                    src.boites.remove(b)
-                    deplaces += 1
-                    progression = True
+                    x, y, niveau, dx, dy, dz, oi = choix
+                    deplacement_xy = ((x - b.x1) ** 2 + (y - b.y1) ** 2) ** 0.5
+                    b.dx, b.dy, b.dz, b.orientation = dx, dy, dz, oi
+                    b.placer(x, y, niveau)
+                    descente += bas - niveau
+                    lateral += deplacement_xy
+                    mouvements += 1
+                    modifies.add(id(b))
+                    mouvement_passage = True
+                if limite_atteinte:
                     break
-            if progression:
+            passages += 1
+            if limite_atteinte or not mouvement_passage:
                 break
-        for c in [c for c in chs if not c.boites]:
-            chs.remove(c)
-    return {"colis_deplaces": deplaces, "avant": avant, "apres": sum(c.hauteur for c in chs),
-            "duree": perf_counter() - debut}
-
-
-def _reduire_hauteurs(chs: list[_Chargement], params: Parametres, regles: ReglesSeparation,
-                      budget: float, rng: random.Random) -> list[dict]:
-    """Reconstruit chaque palette seule avec plusieurs stratégies et garde la moins haute.
-
-    Même idée que la minimisation des hauteurs par palette du notebook (les palettes sont
-    indépendantes une fois les colis affectés), sans solveur : la reconstruction doit
-    placer tous les colis sur la palette d'origine et être valide.
-    """
-    debut = perf_counter()
-    bilans = []
-    poids = [max(1, len(ch.boites) ** 2) for ch in chs]
-    strategies = strategies_deterministes()
-    for index, ch in enumerate(chs):
-        restant = max(0.0, budget - (perf_counter() - debut))
-        part = restant * poids[index] / sum(poids[index:]) if restant else 0.0
-        fin = perf_counter() + part
-        avant = ch.hauteur
-        bilan = {"palette": index + 1, "colis": len(ch.boites), "avant": avant, "apres": avant, "amelioree": False}
-        if len(ch.boites) > 1:
-            a_placer = [(b.colis, ch.type) for b in ch.boites]
-            cpt = _Compteur()
-            meilleur = None
-            for i, strat in enumerate(strategies):
-                if i > 0 and perf_counter() >= fin:
-                    break
-                ordre = _ordre_placement(a_placer, params, strat, rng)
-                res = _construire(ordre, params, regles, strat, cpt, limite_palettes=1,
-                                  type_force=ch.type, zone_force=ch.zone)
-                if res is None or res[1] or len(res[0]) != 1:
-                    continue
-                nouvelle = res[0][0]
-                if meilleur is None or nouvelle.hauteur < meilleur.hauteur - 1e-6:
-                    meilleur = nouvelle
-            if meilleur is not None and meilleur.hauteur < avant - 0.01 and _charge_valide(meilleur, params, regles):
-                ch.boites = meilleur.boites
-                bilan.update(apres=meilleur.hauteur, amelioree=True)
-        bilans.append(bilan)
-    return bilans
+        if limite_atteinte:
+            break
+    hauteur_apres = max((c.hauteur for c in chs), default=0.0)
+    return {"duree": perf_counter() - debut, "deplacement_total": descente / 100.0,
+            "deplacement_lateral": lateral / 100.0, "emplacements_testes": essais, "colis_deplaces": len(modifies),
+            "supports_bloquants": supports_bloquants, "limite_atteinte": limite_atteinte, "mouvements": mouvements,
+            "nombre_passages": passages, "hauteur_avant": hauteur_avant, "hauteur_apres": hauteur_apres,
+            "gain_somme_hauteurs": somme_avant - sum(c.hauteur for c in chs)}
 
 
 # ---------------------------------------------------------------------------
@@ -930,7 +994,8 @@ def _vers_palettes(chs: list[_Chargement]) -> list[Palette]:
 
 def _bilan_phase(chs: list[_Chargement]) -> dict:
     return {"palettes": len(chs), "positions": sum(c.type.positions for c in chs),
-            "hauteurs": round(sum(c.hauteur for c in chs), 1)}
+            "hauteurs": round(sum(c.hauteur for c in chs), 1),
+            "hauteur_globale": round(max((c.hauteur for c in chs), default=0.0), 1)}
 
 
 def _entree_journal(phase: int, titre: str, duree: float, texte: str, chs: list[_Chargement] | None,
@@ -948,7 +1013,7 @@ def _entree_journal(phase: int, titre: str, duree: float, texte: str, chs: list[
 
 def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
               regles: ReglesSeparation | None = None) -> Resultat:
-    """Confectionne les palettes : pipeline en six phases (voir le docstring du module)."""
+    """Confectionne les palettes : pipeline en cinq phases (voir le docstring du module)."""
     params = params or Parametres()
     regles = regles or regles_par_defaut()
     debut = perf_counter()
@@ -1022,7 +1087,7 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
 
     # ---- Phase 3 : fusion des palettes --------------------------------------------------
     avant_fusion = len(chs)
-    stats = _fusionner(chs, params, regles, 0.2 * duree)
+    stats = _fusionner(chs, params, regles, 0.15 * duree)
     _normaliser_zones(chs, params)
     journal.append(_entree_journal(
         3, "Fusion des palettes", stats["duree"],
@@ -1032,49 +1097,37 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
         + (" Limite de temps atteinte : les transferts validés sont conservés." if stats["limite_atteinte"] else ""),
         chs, **{k: stats[k] for k in ("colis_transferes", "fusions_reussies", "emplacements_testes")}))
 
-    # ---- Phase 4 : recentrage et tassement initiaux -------------------------------------------
-    t0 = perf_counter()
-    _recentrer(chs, params)
-    tass = _tasser(chs, params)
-    journal.append(_entree_journal(
-        4, "Recentrage et tassement initial", perf_counter() - t0,
-        f"Chargement recentré puis tassé en {tass['nombre_passages']} passage(s), "
-        f"{tass['deplacement_total']:.3f} m de déplacement cumulé.", chs))
+    # ---- Phase 4 : tassement vertical ---------------------------------------------------------
+    vert = _tasser_vertical(chs, params, 0.25 * duree)
+    texte = (f"{vert['mouvements']} replacement(s) plus bas, {vert['colis_deplaces']} colis distinct(s), "
+             f"{vert['emplacements_testes']} emplacements testés, {vert['deplacement_lateral']:.3f} m de déplacement "
+             f"latéral cumulé, {vert['deplacement_total']:.3f} m de descente cumulée. Hauteur globale : "
+             f"{vert['hauteur_avant']:.1f} → {vert['hauteur_apres']:.1f} cm. Les collisions, les appuis à 90 % et la "
+             "visibilité IATA sont vérifiés après chaque descente.")
+    if not vert["mouvements"]:
+        texte += (" Aucun replacement plus bas trouvé parmi les positions testées ; cet échec ne prouve pas qu'aucune "
+                  "réorganisation ne serait possible.")
+    if vert["limite_atteinte"]:
+        texte += " Budget de temps atteint : les replacements déjà validés sont conservés."
+    journal.append(_entree_journal(4, "Tassement vertical", vert["duree"], texte, chs,
+                                   **{k: vert[k] for k in ("mouvements", "colis_deplaces", "emplacements_testes",
+                                                           "hauteur_avant", "hauteur_apres")}))
 
-    # ---- Phase 5 : minimisation des hauteurs ---------------------------------------------------
-    t0 = perf_counter()
-    desequilibre = _delester(chs, params, regles, 0.1 * duree)
-    _recentrer(chs, params)
-    if utilise_scip:
-        from . import moteur_scip
-        bilans = moteur_scip.minimiser_hauteurs_par_palette(chs, params, regles, params.temps_limite_scip)
-        methode = "modèles SCIP indépendants, un par palette"
-    else:
-        bilans = _reduire_hauteurs(chs, params, regles, 0.2 * duree, rng)
-        methode = "reconstruction de chaque palette avec plusieurs stratégies"
-    gains = [b for b in bilans if b.get("amelioree")]
-    detail = " ; ".join(f"palette {b['palette']} : {b['avant']:.1f} → {b['apres']:.1f} cm" for b in bilans)
-    journal.append(_entree_journal(
-        5, "Minimisation des hauteurs", perf_counter() - t0,
-        f"Rééquilibrage : {desequilibre['colis_deplaces']} colis du sommet déplacés vers l'espace libre des autres "
-        f"palettes (somme des hauteurs {desequilibre['avant']:.1f} → {desequilibre['apres']:.1f} cm). "
-        f"Puis {len(gains)} palette(s) abaissée(s) par {methode}. {detail}.", chs, bilans=bilans,
-        colis_deplaces=desequilibre["colis_deplaces"]))
-
-    # ---- Phase 6 : finalisation ---------------------------------------------------------------------
+    # ---- Phase 5 : recentrage et tassement horizontal -------------------------------------------
     t0 = perf_counter()
     _recentrer(chs, params)
     tass = _tasser(chs, params)
     _normaliser_zones(chs, params)
-    journal.append(_entree_journal(
-        6, "Finalisation", perf_counter() - t0,
-        f"Dernier recentrage et {tass['nombre_passages']} passage(s) de tassement "
-        f"({tass['deplacement_total']:.3f} m). Solution finale : {len(chs)} palette(s), "
-        f"{sum(c.type.positions for c in chs)} emplacement(s), somme des hauteurs "
-        f"{sum(c.hauteur for c in chs):.1f} cm.", chs))
-
     palettes = _vers_palettes(chs)
-    etapes.append(Etape("finale", "Solution finale", "Après fusion, recentrage, tassement et réduction des hauteurs.",
+    journal.append(_entree_journal(
+        5, "Recentrage et tassement horizontal", perf_counter() - t0,
+        f"{tass['nombre_passages']} passage(s), {tass['deplacement_total']:.3f} m de déplacement cumulé ; les "
+        f"coordonnées z restent fixes et le tas est recentré à la fin. Résultat final : {len(chs)} palette(s), "
+        f"{sum(c.type.positions for c in chs)} emplacement(s), hauteur globale "
+        f"{max((c.hauteur for c in chs), default=0.0):.1f} cm, somme des hauteurs {sum(c.hauteur for c in chs):.1f} cm. "
+        "Les hauteurs sont améliorées géométriquement, sans preuve de minimum.", chs))
+
+    etapes.append(Etape("finale", "Solution finale", "Après fusion, tassement vertical, recentrage et tassement horizontal.",
                         palettes))
     return Resultat(palettes, non_places, params, perf_counter() - debut, info["constructions"],
                     "scip" if utilise_scip else "heuristique", "ok", etapes, journal)

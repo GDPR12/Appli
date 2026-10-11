@@ -12,7 +12,7 @@ from dataclasses import dataclass, asdict
 from itertools import combinations
 
 from . import avion
-from .geometrie import se_chevauchent, supports, taux_support, touche_bord_couloir, orientations
+from .geometrie import cotes_visibles, orientations, se_chevauchent, supports, taux_support
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
 from .modeles import Palette, Parametres, Resultat
 
@@ -64,10 +64,10 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
             if q.colis.fragile:
                 msgs.append(Message("erreur", "fragile", f"Colis {c.numero} est posé sur le colis fragile "
                                     f"{q.colis.numero}.", n, [c.numero, q.colis.numero]))
-        # Colis IATA au bord
-        if params.iata_au_bord and classe_de(c.classe).iata and not touche_bord_couloir(p, L, jeu):
-            msgs.append(Message("avertissement", "iata_bord", f"Colis {c.numero} (étiquette {c.classe}) n'est pas "
-                                "contre une face côté couloir : étiquette non accessible.", n, [c.numero]))
+        # Colis IATA : visible depuis au moins un côté (règle de CDP_2)
+        if params.iata_acces and classe_de(c.classe).iata and not cotes_visibles(p, pls):
+            msgs.append(Message("erreur", "iata_acces", f"Colis {c.numero} (étiquette {c.classe}) est masqué des deux côtés "
+                                "par d'autres colis : étiquette non visible.", n, [c.numero]))
         # Fragile au sommet (sangles)
         if c.fragile and abs(p.z2 - pal.hauteur) <= jeu and len(pls) > 1:
             msgs.append(Message("avertissement", "fragile_sommet", f"Colis fragile {c.numero} au sommet de la "

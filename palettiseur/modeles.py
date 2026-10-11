@@ -4,8 +4,9 @@ Unités : centimètres pour les longueurs, kilogrammes pour les masses.
 
 Repère d'une palette : origine au coin de la palette, axe X dans la largeur
 « couloir » (2,74 m, réduite à 2,34 m), axe Y dans le sens de l'avion
-(2,24 m ; 4,48 m pour une BIPAL), axe Z vers le haut. Les deux faces
-x = 0 et x = L de la palette sont les faces côté couloir.
+(2,24 m ; 4,48 m pour une BIPAL), axe Z vers le haut. Comme dans le notebook CDP_2,
+un colis IATA doit rester visible depuis l'un des deux côtés de l'axe Y : « gauche »
+(y minimal) ou « droite » (y maximal).
 """
 
 from __future__ import annotations
@@ -96,7 +97,7 @@ class TypePalette:
 
     code: str            # "10K", "BIPAL", "TRIPAL"
     libelle: str
-    largeur: float       # cm, axe X (côté couloir)
+    largeur: float       # cm, axe X
     longueur: float      # cm, axe Y (sens de l'avion)
     hauteur_max: float   # cm
     masse_max: float     # kg, masse nette maximale de chargement
@@ -232,11 +233,11 @@ class Parametres:
     longueur_palette: float = 224.0
     reduction_couloir: float = 20.0
     derogation_couloir: bool = False
-    hauteur_max: float = 200.0
+    hauteur_max: float = 254.0           # cm : 2,54 m, hauteur des palettes du notebook CDP_2
     masse_max_soute: float = 4536.0      # kg, masse brute maximale d'une 10k en soute
     masse_max_rampe: float = 3000.0      # kg, masse brute maximale sur la rampe
     tare_palette: float = 130.0          # kg, masse à vide d'une palette 10k (HCU-6/E)
-    hauteur_max_rampe: float = 200.0     # cm (forme oblique de la rampe non modélisée)
+    hauteur_max_rampe: float = 254.0     # cm (forme oblique de la rampe non modélisée)
     autoriser_bipal: bool = True
     autoriser_tripal: bool = True
 
@@ -251,7 +252,7 @@ class Parametres:
     # Règles de confection
     support_minimal: float = 0.90        # part de la base qui doit reposer sur quelque chose
     facteur_masse: float = 1.0           # un colis posé doit avoir masse <= facteur x masse du support
-    iata_au_bord: bool = True            # colis IATA contre une face côté couloir
+    iata_acces: bool = True              # colis IATA visibles depuis au moins un côté (règle de CDP_2)
     jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
 
     # Algorithme

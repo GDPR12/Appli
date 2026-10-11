@@ -19,7 +19,7 @@ class ClasseColis:
     code: str
     libelle: str
     couleur: str          # couleur d'affichage (hex)
-    iata: bool            # étiquette IATA (pictogramme) -> doit être au bord de la palette
+    iata: bool            # étiquette IATA (pictogramme) -> doit rester visible depuis un côté
     description: str = ""
 
 
@@ -43,8 +43,10 @@ CLASSES: list[ClasseColis] = [
     ClasseColis("6.2",  "Matière infectieuse (6.2)",                     "#c5b0d5", True),
     ClasseColis("7",    "Matière radioactive (classe 7)",                "#17becf", True),
     ClasseColis("8",    "Matière corrosive (classe 8)",                  "#3d4a5c", True),
-    ClasseColis("9",    "Divers (classe 9)",                             "#98df8a", True),
-    ClasseColis("9L",   "Piles / batteries au lithium (classe 9)",       "#4e9bd8", True),
+    ClasseColis("9",    "Classe 9 (piles au lithium, séparation 9.3.A)", "#98df8a", True,
+                "Comme dans le notebook CDP_2 : jamais avec les classes 1, 2.1, 3, 4.1 et 5.1."),
+    ClasseColis("9L",   "Piles / batteries au lithium (ancien code)",    "#4e9bd8", True,
+                "Même règle que la classe 9 ; conservé pour les listes déjà saisies."),
     ClasseColis("ARME", "Armement : arme",                               "#5c6b2f", False,
                 "Doit voyager sur une autre palette que sa pièce de sécurité."),
     ClasseColis("SECU", "Armement : pièce de sécurité",                  "#a8b86b", False,

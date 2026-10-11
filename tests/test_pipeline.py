@@ -1,4 +1,4 @@
-"""Tests des phases du pipeline (fusion, recentrage, tassement, rééquilibrage, zones) et du résultat complet."""
+"""Tests des phases du pipeline (fusion, tassement vertical, recentrage et tassement horizontal, zones) et du résultat complet."""
 
 import json
 
@@ -104,7 +104,7 @@ def test_fusion_respecte_la_masse_maximale():
     assert len(chs) == 2
 
 
-# --------------------------------------------------------------------------- phases 4 et 6
+# --------------------------------------------------------------------------- phase 5 : recentrage et tassement horizontal
 
 def test_tassement_rapproche_du_centre_sans_rien_casser():
     p = params()
@@ -130,40 +130,81 @@ def test_tassement_ne_glisse_pas_un_colis_lourd_sur_un_plus_leger():
     assert opt._aire_commune(h, ll) == 0.0 and _charge_valide(ch, p, R)
 
 
-def test_recentrage_ne_decolle_pas_un_colis_iata():
+def test_tassement_ne_masque_jamais_un_colis_iata_des_deux_cotes():
+    """Deux colis glissent vers le centre de part et d'autre d'un colis central : s'il est dangereux, le second s'arrête."""
+    p = params()
+
+    def construire(classe):
+        centre = colis(1, 50, classe=classe)
+        avant, arriere = colis(2, 80, l=60, w=60, h=50), colis(3, 80, l=60, w=60, h=50)
+        return charge(p, (centre, 100, 100, 0, 50, 50, 50), (avant, 0, 0, 0, 60, 60, 50), (arriere, 0, 164, 0, 60, 60, 50))
+
+    temoin = construire("")                      # colis central ordinaire : rien ne l'empêche d'être entouré
+    opt._tasser([temoin], p)
+    assert not opt._cotes_visibles(temoin.boites[0], temoin.boites)
+
+    ch = construire("3")                         # colis central dangereux : au moins un côté reste libre
+    assert opt._iata_ok(ch.boites, p)
+    opt._tasser([ch], p)
+    assert _charge_valide(ch, p, R)
+    assert opt._cotes_visibles(ch.boites[0], ch.boites)
+
+
+def test_recentrage_conserve_les_positions_relatives():
     p = params()
     iata = colis(1, 50, classe="3")
     ch = charge(p, (iata, 0, 10, 0, 50, 50, 50), (colis(2, 400), 50, 10, 0, 50, 50, 50))
+    avant = [(b.x1 - ch.boites[0].x1, b.y1 - ch.boites[0].y1) for b in ch.boites]
     opt._recentrer([ch], p)
-    b = next(x for x in ch.boites if x.colis is iata)
-    assert b.x1 <= p.jeu_contact + 1e-9
-    opt._tasser([ch], p)
-    assert b.x1 <= p.jeu_contact + 1e-9 and _charge_valide(ch, p, R)
+    assert [(b.x1 - ch.boites[0].x1, b.y1 - ch.boites[0].y1) for b in ch.boites] == avant
+    assert opt._iata_ok(ch.boites, p)
 
 
-# --------------------------------------------------------------------------- phase 5 : rééquilibrage
+# --------------------------------------------------------------------------- phase 4 : tassement vertical
 
-def test_delestage_abaisse_la_somme_des_hauteurs():
+def test_tassement_vertical_abaisse_un_colis_perche():
     p = params()
-    a = charge(p, (colis(1, 100), 0, 0, 0, 100, 100, 50), (colis(2, 20), 0, 0, 50, 100, 100, 50))   # 100 cm
-    b = charge(p, (colis(3, 100), 0, 0, 0, 100, 100, 30))                                            # 30 cm
-    chs = [a, b]
-    avant = sum(c.hauteur for c in chs)
-    stats = opt._delester(chs, p, R, 2.0)
-    apres = sum(c.hauteur for c in chs)
-    assert apres < avant and stats["colis_deplaces"] >= 1
-    assert all(_charge_valide(c, p, R) for c in chs)
-    assert sum(len(c.boites) for c in chs) == 3          # aucun colis perdu (la palette vidée disparaît)
+    a = colis(1, 500, l=100, w=100, h=50)
+    b = colis(2, 60, l=100, w=100, h=50)                       # posé sur a alors que le plateau est libre à côté
+    ch = charge(p, (a, 0, 0, 0, 100, 100, 50), (b, 0, 0, 50, 100, 100, 50))
+    stats = opt._tasser_vertical([ch], p, 5.0)
+    assert stats["mouvements"] == 1 and stats["hauteur_avant"] == 100 and stats["hauteur_apres"] == 50
+    assert next(x for x in ch.boites if x.colis is b).z1 == 0 and _charge_valide(ch, p, R)
 
 
-def test_reduire_hauteurs_ne_degrade_jamais():
-    p = params(duree_recherche=1.0)
-    lot = [colis(i, 10 + i, l=40 + 5 * (i % 4), w=40, h=30 + 5 * (i % 3)) for i in range(14)]
-    res = opt.optimiser(lot, p)
-    assert len(res.palettes) >= 1
-    assert res.journal[4]["titre"] == "Minimisation des hauteurs"
-    for b in res.journal[4]["bilans"]:
-        assert b["apres"] <= b["avant"] + 1e-9
+def test_tassement_vertical_respecte_les_appuis_des_autres_colis():
+    """Un colis qui en porte un autre sans solution de rechange ne peut pas être retiré."""
+    p = params()
+    socle = colis(1, 500, l=274, w=224, h=50)                 # plateau entièrement couvert
+    b = colis(2, 100, l=100, w=100, h=30)
+    c = colis(3, 50, l=100, w=100, h=30)                       # posé sur b, qui ne peut pas descendre plus bas
+    ch = charge(p, (socle, 0, 0, 0, 274, 224, 50), (b, 0, 0, 50, 100, 100, 30), (c, 0, 0, 80, 100, 100, 30))
+    stats = opt._tasser_vertical([ch], p, 5.0)
+    assert _charge_valide(ch, p, R)
+    assert all(x.z1 >= 50 - 1e-9 for x in ch.boites if x.colis is not socle)       # personne sous le niveau du socle
+    assert stats["hauteur_apres"] <= stats["hauteur_avant"]
+
+
+def test_tassement_vertical_ne_releve_jamais_un_sommet():
+    import random
+    rng = random.Random(7)
+    lot = [Colis(f"C{i}", rng.randint(30, 100), rng.randint(30, 80), rng.randint(20, 60), rng.randint(5, 250),
+                 renversable=rng.random() < 0.5, classe=rng.choice(["", "", "", "3", "9", "2.2"])) for i in range(40)]
+    res = opt.optimiser(lot, Parametres(duree_recherche=0.8, derogation_couloir=True))
+    types = res.parametres.types_palettes()
+    chs = []
+    for pal in res.palettes:                                  # reconstitue des chargements modifiables
+        ch = opt._Chargement(pal.type, pal.zone)
+        for pl in pal.placements:
+            ch.boites.append(opt._Boite(pl.colis, pl.x, pl.y, pl.z, pl.dx, pl.dy, pl.dz, pl.orientation))
+        chs.append(ch)
+    avant = {id(b.colis): (b.z1, b.z2) for ch in chs for b in ch.boites}
+    opt._tasser_vertical(chs, res.parametres, 3.0)
+    for ch in chs:
+        assert _charge_valide(ch, res.parametres, R)
+        for b in ch.boites:
+            z1, z2 = avant[id(b.colis)]
+            assert b.z1 <= z1 + 1e-9 and b.z2 <= z2 + 1e-9
 
 
 def test_normaliser_zones_repasse_en_soute():
@@ -179,8 +220,10 @@ def test_normaliser_zones_repasse_en_soute():
 def test_resultat_contient_etapes_et_journal():
     res = opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(10)], params(duree_recherche=1.0))
     assert [e.cle for e in res.etapes] == ["heuristique", "finale"]
-    assert [j["phase"] for j in res.journal] == [1, 2, 3, 4, 5, 6]
+    assert [j["phase"] for j in res.journal] == [1, 2, 3, 4, 5]
+    assert [j["titre"] for j in res.journal][3:] == ["Tassement vertical", "Recentrage et tassement horizontal"]
     assert res.journal[1]["ignoree"] is True              # pas de SCIP avec le moteur heuristique
+    assert "hauteur_globale" in res.journal[-1]
     assert all("texte" in j and j["duree"] >= 0 for j in res.journal)
     assert res.etapes[-1].palettes == res.palettes
 
@@ -203,7 +246,8 @@ def test_resultat_json_avec_etapes():
     assert [e["cle"] for e in d["etapes"]] == ["heuristique", "finale"]
     assert "palettes" in d["etapes"][0] and "palettes" not in d["etapes"][-1]
     assert d["etapes"][0]["bilan"]["colis_places"] == d["bilan"]["colis_places"]
-    assert len(d["journal"]) == 6
+    assert len(d["journal"]) == 5
+    assert "hauteur_globale" in d["bilan"]
 
 
 @pytest.mark.parametrize("graine", [0, 1, 2, 3])
