@@ -67,7 +67,7 @@ def test_construction_ne_cree_jamais_de_lourd_sur_leger_par_porte_a_faux():
     import random
     rng = random.Random(2)
     lot = [Colis(f"C{i}", rng.randint(25, 100), rng.randint(25, 80), rng.randint(15, 70), rng.randint(3, 120),
-                 renversable=rng.random() < 0.5, classe=rng.choice(["", "", "", "", "", "3", "5.1", "8", "ARME", "SECU"]),
+                 emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "", "", "3", "5.1", "8", "ARME", "SECU"]),
                  fragile=rng.random() < 0.04) for i in range(300)]
     res = opt.optimiser(lot, Parametres(duree_recherche=1.0, graine=2, positions_soute=20))
     # 300 colis dépassent les 9 emplacements de l'avion : on ne juge ici que les règles de palettisation
@@ -130,24 +130,40 @@ def test_tassement_ne_glisse_pas_un_colis_lourd_sur_un_plus_leger():
     assert opt._aire_commune(h, ll) == 0.0 and _charge_valide(ch, p, R)
 
 
-def test_tassement_ne_masque_jamais_un_colis_iata_des_deux_cotes():
-    """Deux colis glissent vers le centre de part et d'autre d'un colis central : s'il est dangereux, le second s'arrête."""
-    p = params()
-
-    def construire(classe):
-        centre = colis(1, 50, classe=classe)
-        avant, arriere = colis(2, 80, l=60, w=60, h=50), colis(3, 80, l=60, w=60, h=50)
-        return charge(p, (centre, 100, 100, 0, 50, 50, 50), (avant, 0, 0, 0, 60, 60, 50), (arriere, 0, 164, 0, 60, 60, 50))
-
-    temoin = construire("")                      # colis central ordinaire : rien ne l'empêche d'être entouré
-    opt._tasser([temoin], p)
-    assert not opt._cotes_visibles(temoin.boites[0], temoin.boites)
-
-    ch = construire("3")                         # colis central dangereux : au moins un côté reste libre
-    assert opt._iata_ok(ch.boites, p)
+@pytest.mark.parametrize("graine", range(6))
+def test_tassement_ne_masque_jamais_un_colis_iata_des_deux_cotes(graine):
+    """Sans la règle du bord, un colis dangereux reste au moins visible depuis un côté du couloir après tassement."""
+    import random
+    rng = random.Random(graine)
+    p = params(iata_au_bord=False)
+    largeur = p.types_palettes()[0].largeur
+    ch = _Chargement(p.types_palettes()[0], "soute")
+    for k in range(9):                                       # grille de 3 x 3 colis, dangereux aux deux extrémités
+        classe = "3" if k in (0, 8) else ""
+        ch.boites.append(_Boite(colis(k, 60 + rng.randint(0, 40), classe=classe), (k % 3) * 90, (k // 3) * 70, 0, 50, 50, 50))
+    assert opt._iata_ok(ch.boites, p, largeur)
     opt._tasser([ch], p)
     assert _charge_valide(ch, p, R)
-    assert opt._cotes_visibles(ch.boites[0], ch.boites)
+    for b in ch.boites:
+        if b.colis.classe:
+            assert opt._cotes_visibles(b, ch.boites), b.colis.numero
+
+
+def test_tassement_garde_un_colis_iata_contre_son_bord():
+    """Avec l'option « IATA sur le bord », le tassement ne décolle jamais un colis dangereux du bord du couloir."""
+    p = params()
+    largeur = p.types_palettes()[0].largeur
+    iata = colis(1, 60, classe="3")
+    autre = colis(2, 100, l=60, w=60, h=50)
+    ch = charge(p, (autre, 100, 0, 0, 60, 60, 50), (iata, 0, 100, 0, 50, 50, 50))
+    assert opt._iata_ok(ch.boites, p, largeur)
+    opt._tasser([ch], p)
+    b = next(x for x in ch.boites if x.colis is iata)
+    assert b.x1 < 0.001 and _charge_valide(ch, p, R) and opt._iata_ok(ch.boites, p, largeur)
+    droite = charge(p, (autre, 100, 0, 0, 60, 60, 50), (iata, largeur - 50, 100, 0, 50, 50, 50))
+    opt._tasser([droite], p)
+    b = next(x for x in droite.boites if x.colis is iata)
+    assert largeur - b.x2 < 0.001 and opt._iata_ok(droite.boites, p, largeur)
 
 
 def test_recentrage_conserve_les_positions_relatives():
@@ -157,7 +173,16 @@ def test_recentrage_conserve_les_positions_relatives():
     avant = [(b.x1 - ch.boites[0].x1, b.y1 - ch.boites[0].y1) for b in ch.boites]
     opt._recentrer([ch], p)
     assert [(b.x1 - ch.boites[0].x1, b.y1 - ch.boites[0].y1) for b in ch.boites] == avant
-    assert opt._iata_ok(ch.boites, p)
+    assert ch.boites[0].x1 < 0.001                               # le colis IATA reste contre le bord (à 5 µm près)
+    assert opt._iata_ok(ch.boites, p, ch.type.largeur)
+
+
+def test_tassement_n_isole_pas_un_colis():
+    p = params()
+    a, b, c = colis(1, 100), colis(2, 100), colis(3, 100)
+    ch = charge(p, (a, 0, 0, 0, 50, 50, 50), (b, 50, 0, 0, 50, 50, 50), (c, 100, 0, 0, 50, 50, 50))
+    opt._tasser([ch], p)
+    assert not opt._isoles(ch.boites, p.jeu_contact) and _charge_valide(ch, p, R)
 
 
 # --------------------------------------------------------------------------- phase 4 : tassement vertical
@@ -189,7 +214,7 @@ def test_tassement_vertical_ne_releve_jamais_un_sommet():
     import random
     rng = random.Random(7)
     lot = [Colis(f"C{i}", rng.randint(30, 100), rng.randint(30, 80), rng.randint(20, 60), rng.randint(5, 250),
-                 renversable=rng.random() < 0.5, classe=rng.choice(["", "", "", "3", "9", "2.2"])) for i in range(40)]
+                 emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "3", "9", "2.2"])) for i in range(40)]
     res = opt.optimiser(lot, Parametres(duree_recherche=0.8, derogation_couloir=True))
     types = res.parametres.types_palettes()
     chs = []
@@ -236,7 +261,7 @@ def test_exemple_cdp_deux_palettes_sans_erreur():
     res = opt.optimiser([Colis.depuis_dict(c) for c in ex["colis"]], p)
     assert len(res.palettes) == 2 and res.positions_utilisees == 2
     assert [m for m in verifier(res) if m.niveau == "erreur"] == []
-    assert all(not pl.colis.renversable and pl.dz == pl.colis.hauteur for pal in res.palettes for pl in pal.placements)
+    assert all(pl.dz == pl.colis.hauteur for pal in res.palettes for pl in pal.placements)
 
 
 def test_resultat_json_avec_etapes():
@@ -257,7 +282,7 @@ def test_pipeline_aleatoire_toujours_valide(graine):
     lot = []
     for i in range(35):
         lot.append(Colis(f"C{i}", rng.randint(30, 110), rng.randint(30, 90), rng.randint(20, 80), rng.randint(5, 300),
-                         renversable=rng.random() < 0.6,
+                         emballage=rng.choice(["", "bois", "carton", "fibre"]),
                          classe=rng.choice(["", "", "", "3", "1", "5.1", "2.2", "8", "9L", "ARME", "SECU"]),
                          fragile=rng.random() < 0.06))
     res = opt.optimiser(lot, Parametres(duree_recherche=1.0, graine=graine))

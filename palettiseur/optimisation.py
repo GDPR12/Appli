@@ -41,7 +41,7 @@ from operator import itemgetter
 from time import perf_counter
 from typing import Iterable
 
-from .geometrie import TOL_VISIBLE, orientations, tient_dans
+from .geometrie import TOL_VISIBLE, orientations, plafond_charge, tient_dans
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
 from .modeles import Colis, Etape, Palette, Parametres, Placement, Resultat, TypePalette
 
@@ -136,7 +136,7 @@ def _dans_palette(b: _Boite, t: TypePalette) -> bool:
 
 
 def _support_ok(b: _Boite, boites: list[_Boite], params: Parametres, exclu: _Boite | None = None) -> bool:
-    """Support d'au moins ``support_minimal`` de la base, sans colis plus léger ni fragile dessous."""
+    """Support d'au moins ``support_minimal`` de la base, sans porteur trop léger, fragile ou en carton."""
     if b.z1 <= TOL:
         return True
     aire = 0.0
@@ -146,37 +146,56 @@ def _support_ok(b: _Boite, boites: list[_Boite], params: Parametres, exclu: _Boi
         if abs(o.z2 - b.z1) <= TOL:
             a = _aire_commune(o, b)
             if a > 0.0:
-                if o.colis.fragile or b.colis.masse > params.facteur_masse * o.colis.masse + TOL:
+                if b.colis.masse > plafond_charge(o.colis, params) + TOL:
                     return False
                 aire += a
     return aire >= params.support_minimal * b.dx * b.dy - TOL
 
 
 def _cotes_visibles(b: _Boite, boites: list[_Boite], precision: float = TOL_VISIBLE) -> tuple[str, ...]:
-    """Côtés (« gauche » : y minimal, « droite » : y maximal) depuis lesquels ``b`` reste visible.
+    """Côtés du couloir (« gauche » : x minimal, « droite » : x maximal) depuis lesquels ``b`` reste visible.
 
-    Même règle que ``geometrie.cotes_visibles`` (notebook CDP_2) sur les boîtes internes, pour les boucles rapides.
+    Même règle que ``geometrie.cotes_visibles`` (notebook CDP_3, sur l'axe du couloir) appliquée aux boîtes internes,
+    pour les boucles rapides : un autre colis masque un côté s'il dépasse de ``b`` de ce côté et que leurs
+    projections se chevauchent selon y et selon z.
     """
     gauche = droite = True
     for o in boites:
         if o is b:
             continue
-        if min(b.x2, o.x2) - max(b.x1, o.x1) > precision and min(b.z2, o.z2) - max(b.z1, o.z1) > precision:
-            if o.y1 < b.y1 - precision:
+        if min(b.y2, o.y2) - max(b.y1, o.y1) > precision and min(b.z2, o.z2) - max(b.z1, o.z1) > precision:
+            if o.x1 < b.x1 - precision:
                 gauche = False
-            if o.y2 > b.y2 + precision:
+            if o.x2 > b.x2 + precision:
                 droite = False
             if not gauche and not droite:
                 return ()
     return tuple(cote for cote, libre in (("gauche", gauche), ("droite", droite)) if libre)
 
 
-def _iata_ok(boites: list[_Boite], params: Parametres, nouveau: _Boite | None = None) -> bool:
-    """Tous les colis IATA du chargement (avec ``nouveau`` s'il est donné) restent visibles d'au moins un côté."""
-    if not params.iata_acces:
-        return True
+def _cotes_bord(b: _Boite, largeur: float, jeu: float) -> tuple[str, ...]:
+    """Côtés du couloir contre lesquels ``b`` est posé : « gauche » en x = 0, « droite » en x = largeur utile."""
+    cotes = []
+    if b.x1 <= jeu:
+        cotes.append("gauche")
+    if b.x2 >= largeur - jeu:
+        cotes.append("droite")
+    return tuple(cotes)
+
+
+def _iata_ok(boites: list[_Boite], params: Parametres, largeur: float, nouveau: _Boite | None = None) -> bool:
+    """Chaque colis IATA du chargement (avec ``nouveau`` s'il est donné) reste visible depuis un côté du couloir ;
+    avec ``iata_au_bord``, il est de plus posé contre ce bord, étiquette tournée vers le couloir."""
     tous = boites if nouveau is None else boites + [nouveau]
-    return all(_cotes_visibles(b, tous) for b in tous if b.iata)
+    for b in tous:
+        if not b.iata:
+            continue
+        visibles = _cotes_visibles(b, tous)
+        if not visibles:
+            return False
+        if params.iata_au_bord and not any(c in visibles for c in _cotes_bord(b, largeur, params.jeu_contact)):
+            return False
+    return True
 
 
 def _charge_valide(ch: _Chargement, params: Parametres, regles: ReglesSeparation) -> bool:
@@ -191,15 +210,15 @@ def _charge_valide(ch: _Chargement, params: Parametres, regles: ReglesSeparation
         for b in bs[i + 1:]:
             if _se_chevauchent(a, b) or not regles.compatibles(a.colis.classe, b.colis.classe):
                 return False
-    return all(_support_ok(b, bs, params) for b in bs) and _iata_ok(bs, params)
+    return all(_support_ok(b, bs, params) for b in bs) and _iata_ok(bs, params, t.largeur)
 
 
 def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float,
                      dx: float, dy: float, dz: float, params: Parametres) -> bool:
     """Un colis peut-il être posé en (x, y, z) sur la palette ? (masse et classes à tester à part)
 
-    Contrôle les limites, les collisions, le support, les règles de masse et de fragilité, et la visibilité
-    des colis IATA (celui qu'on pose, comme ceux déjà en place)."""
+    Contrôle les limites, les collisions, le support, la charge admissible des porteurs (lourd/léger, fragile,
+    carton) et la règle IATA (visibilité et bord) du colis qu'on pose comme de ceux déjà en place."""
     t = ch.type
     if x < -TOL or y < -TOL or z < -TOL or x + dx > t.largeur + TOL or y + dy > t.longueur + TOL \
             or z + dz > t.hauteur_max + TOL:
@@ -211,15 +230,15 @@ def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float
             if o.z1 < z2 - TOL and o.z2 > z + TOL:
                 return False
             if z > TOL and abs(o.z2 - z) <= TOL:
-                if o.colis.fragile or colis.masse > params.facteur_masse * o.colis.masse + TOL:
+                if colis.masse > plafond_charge(o.colis, params) + TOL:
                     return False
                 aire += (min(o.x2, x2) - max(o.x1, x)) * (min(o.y2, y2) - max(o.y1, y))
-            if abs(o.z1 - z2) <= TOL and (colis.fragile or o.colis.masse > params.facteur_masse * colis.masse + TOL):
-                return False        # o reposerait sur ce colis (porte-à-faux) : trop lourd ou colis fragile
+            if abs(o.z1 - z2) <= TOL and o.colis.masse > plafond_charge(colis, params) + TOL:
+                return False        # o reposerait sur ce colis (porte-à-faux) : trop lourd, fragile ou carton
     if z > TOL and aire < params.support_minimal * dx * dy - TOL:
         return False
-    if params.iata_acces and (classe_de(colis.classe).iata or any(o.iata for o in ch.boites)):
-        return _iata_ok(ch.boites, params, _Boite(colis, x, y, z, dx, dy, dz))
+    if classe_de(colis.classe).iata or any(o.iata for o in ch.boites):
+        return _iata_ok(ch.boites, params, t.largeur, _Boite(colis, x, y, z, dx, dy, dz))
     return True
 
 
@@ -228,6 +247,25 @@ def _classes_compatibles(ch: _Chargement, colis: Colis, regles: ReglesSeparation
     if not code:
         return True
     return all(regles.compatibles(code, c) for c in ch.classes)
+
+
+def _en_contact(a: _Boite, b: _Boite, jeu: float) -> bool:
+    """Deux colis partagent une face (latérale ou verticale) d'aire non nulle, à ``jeu`` cm près."""
+    ox = min(a.x2, b.x2) - max(a.x1, b.x1)
+    oy = min(a.y2, b.y2) - max(a.y1, b.y1)
+    oz = min(a.z2, b.z2) - max(a.z1, b.z1)
+    if (abs(a.x2 - b.x1) <= jeu or abs(b.x2 - a.x1) <= jeu) and oy > TOL and oz > TOL:
+        return True
+    if (abs(a.y2 - b.y1) <= jeu or abs(b.y2 - a.y1) <= jeu) and ox > TOL and oz > TOL:
+        return True
+    return (abs(a.z2 - b.z1) <= jeu or abs(b.z2 - a.z1) <= jeu) and ox > TOL and oy > TOL
+
+
+def _isoles(boites: list[_Boite], jeu: float) -> set[int]:
+    """Colis sans aucun contact avec un autre colis de la palette (le projet interdit qu'un colis reste isolé)."""
+    if len(boites) < 2:
+        return set()
+    return {id(b) for b in boites if not any(o is not b and _en_contact(b, o, jeu) for o in boites)}
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +312,17 @@ def _candidats(boites: list[_Boite], L: float, W: float, dx: float,
                    for x, y, z in sortie}, key=_PAR_Z_Y_X)
 
 
+def _vers_le_bord(candidats: list[tuple[float, float, float]], L: float,
+                  dx: float) -> list[tuple[float, float, float]]:
+    """Ramène chaque position candidate contre l'un des deux bords du couloir (x = 0 ou x = L − dx), en gardant y et z.
+
+    Un colis IATA ne peut être posé que contre un bord : on garde donc, pour chaque (y, z) possible, la position
+    contre le bord gauche et celle contre le bord droit.
+    """
+    xmax = max(0.0, L - dx)
+    return sorted({(bx, y, z) for _, y, z in candidats for bx in (0.0, round(xmax, 4))}, key=_PAR_Z_Y_X)
+
+
 def _ancrages_dbl(boites: list[_Boite], L: float, W: float, dx: float,
                   dy: float) -> list[tuple[float, float, float]]:
     """Ancrages « coins » (coins du plateau et des colis déjà posés), sans hauteur : la chute la calcule."""
@@ -293,11 +342,12 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                         seuil: tuple | None, cpt: _Compteur):
     """Meilleure position du colis sur la palette, strictement meilleure que ``seuil`` (sinon None).
 
-    Variante ``cdp`` : score lexicographique de CDP_2, dans cet ordre : distance d'un colis IATA à l'extrémité
-    la plus proche en y, base la plus basse, hauteur de la palette, surface couverte au sol, plus grande
+    Variante ``cdp`` : score lexicographique de CDP_3, dans cet ordre : distance d'un colis IATA au bord du couloir
+    le plus proche (en x), base la plus basse, hauteur de la palette, surface couverte au sol, plus grande
     bande libre, somme des carrés des bandes libres, distance aux bords, support, compacité du tas, centrage
     du centre de masse, distance au centre. Les autres variantes sont des stratégies complémentaires de
-    l'application. Toute position doit laisser visibles les colis IATA (celui qu'on pose et ceux en place).
+    l'application. Un colis IATA n'est posé que contre un bord du couloir (avec ``iata_au_bord``) et toute position
+    doit laisser visibles les colis IATA (celui qu'on pose et ceux déjà en place).
     """
     t = ch.type
     L, W, H = t.largeur, t.longueur, t.hauteur_max
@@ -305,10 +355,12 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
     m = colis.masse
     if ch.masse + m > t.masse_max + TOL or not _classes_compatibles(ch, colis, regles):
         return None
-    jeu, facteur, support_min = params.jeu_contact, params.facteur_masse, params.support_minimal
+    jeu, support_min = params.jeu_contact, params.support_minimal
     iata = classe_de(colis.classe).iata
-    controle_iata = params.iata_acces and (iata or any(b.iata for b in bs))
-    donnees = [(b.x1, b.x2, b.y1, b.y2, b.z1, b.z2, b.colis.masse, b.colis.fragile) for b in bs]
+    bord_iata = iata and params.iata_au_bord
+    controle_iata = iata or any(b.iata for b in bs)
+    plafond_colis = plafond_charge(colis, params)        # charge admissible sur le colis qu'on pose
+    donnees = [(b.x1, b.x2, b.y1, b.y2, b.z1, b.z2, b.colis.masse, plafond_charge(b.colis, params)) for b in bs]
     hauteur0 = max((d[5] for d in donnees), default=0.0)
     masse0 = sum(d[6] for d in donnees)
     mx0 = sum(d[6] * (d[0] + d[1]) / 2 for d in donnees)
@@ -335,6 +387,8 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
             candidats = _ancrages_dbl(bs, L, W, dx, dy)
         else:
             candidats = _candidats(bs, L, W, dx, dy)
+        if bord_iata:
+            candidats = _vers_le_bord(candidats, L, dx)
         if dbl:
             # « le plus bas, le plus au fond » : chaque position est testée après chute jusqu'au sommet
             # le plus haut sous l'empreinte, ce qui remplit les couches sans vides.
@@ -363,8 +417,8 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                 if seuil_k is not None and primaire > seuil_k[1] + 1e-6:
                     break
             x2, y2 = x + dx, y + dy
-            # Un colis IATA se range d'abord contre l'une des deux extrémités en y (préférence de CDP_2).
-            distance_iata = round(min(y, W - y2), 6) if iata else 0.0
+            # Un colis IATA se range d'abord contre un bord du couloir (préférence de CDP_3, sur l'axe x).
+            distance_iata = round(min(x, L - x2), 6) if iata else 0.0
             cle = (distance_iata, round(primaire, 6))
             if meilleur is not None and cle > meilleur[0][:2]:
                 continue
@@ -374,19 +428,19 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
             ok = True
             aire = 0.0
             contact = 0.0
-            for ox1, ox2, oy1, oy2, oz1, oz2, om, ofr in donnees:
+            for ox1, ox2, oy1, oy2, oz1, oz2, om, oplafond in donnees:
                 recoupe_xy = ox1 < x2 - TOL and ox2 > x + TOL and oy1 < y2 - TOL and oy2 > y + TOL
                 if recoupe_xy:
                     if oz1 < z2 - TOL and oz2 > z + TOL:
                         ok = False
                         break
                     if z > TOL and abs(oz2 - z) <= TOL:
-                        if ofr or m > facteur * om + TOL:
-                            ok = False
+                        if m > oplafond + TOL:
+                            ok = False      # le porteur ne supporte pas ce colis : trop léger, fragile ou en carton
                             break
                         aire += (min(ox2, x2) - max(ox1, x)) * (min(oy2, y2) - max(oy1, y))
-                    if abs(oz1 - z2) <= TOL and (colis.fragile or om > facteur * m + TOL):
-                        ok = False      # le colis déjà posé en o reposerait sur celui-ci (porte-à-faux) : trop lourd ou fragile
+                    if abs(oz1 - z2) <= TOL and om > plafond_colis + TOL:
+                        ok = False      # le colis déjà posé en o reposerait sur celui-ci (porte-à-faux) : trop lourd, fragile ou carton
                         break
                 elif variante == "contact" and oz1 < z2 - TOL and oz2 > z + TOL:
                     if (abs(ox2 - x) <= jeu or abs(ox1 - x2) <= jeu) and oy1 < y2 - TOL and oy2 > y + TOL:
@@ -430,7 +484,7 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                 else:       # "contact"
                     score = cle + (-round(contact, 3),) + reste
             if meilleur is None or score < meilleur[0]:
-                if controle_iata and not _iata_ok(bs, params, _Boite(colis, x, y, z, dx, dy, dz)):
+                if controle_iata and not _iata_ok(bs, params, L, _Boite(colis, x, y, z, dx, dy, dz)):
                     continue
                 meilleur = (score, x, y, z, dx, dy, dz, oi)
     return meilleur
@@ -549,12 +603,14 @@ def _construire(ordre: list[tuple[Colis, TypePalette]], params: Parametres, regl
 def _objectif(chs: list[_Chargement], echecs: int, params: Parametres) -> tuple:
     """Comparaison lexicographique des constructions (plus petit = meilleur).
 
-    Colis non placés, emplacements, palettes, puis la clé de CDP_2 : hauteur globale, surface couverte au sol
-    (la plus grande), somme des hauteurs, décentrage des centres de masse.
+    Colis non placés, emplacements, palettes, puis la clé de CDP_3 : hauteur globale, surface couverte au sol
+    (la plus grande), somme des hauteurs, puis (ajout de l'application) nombre de colis isolés et décentrage des
+    centres de masse.
     """
     positions = sum(ch.type.positions for ch in chs)
-    dispersion, surface = 0.0, 0.0
+    dispersion, surface, isoles = 0.0, 0.0, 0
     for ch in chs:
+        isoles += len(_isoles(ch.boites, params.jeu_contact))
         L, W = ch.type.largeur, ch.type.longueur
         surface += sum(b.dx * b.dy for b in ch.boites if b.z1 <= TOL)
         masse = ch.masse
@@ -564,7 +620,7 @@ def _objectif(chs: list[_Chargement], echecs: int, params: Parametres) -> tuple:
             dispersion += abs(cx - L / 2) / L + abs(cy - W / 2) / W
     hauteur_globale = max((ch.hauteur for ch in chs), default=0.0)
     return (echecs, positions, len(chs), round(hauteur_globale, 1), -round(surface, 1),
-            round(sum(ch.hauteur for ch in chs), 1), round(dispersion, 4))
+            round(sum(ch.hauteur for ch in chs), 1), isoles, round(dispersion, 4))
 
 
 def strategies_deterministes() -> list[Strategie]:
@@ -641,8 +697,8 @@ def _placer_dans(dest: _Chargement, colis: Colis, params: Parametres, regles: Re
                  compteur: list[int] | None = None):
     """Première position valide (la plus basse) d'un colis sur la palette, toutes orientations permises.
 
-    Retourne (clé, x, y, z, dx, dy, dz, orientation) ou None. Masse, classes, support et visibilité des colis
-    IATA sont contrôlés ; un colis IATA préfère l'extrémité de la palette en y.
+    Retourne (clé, x, y, z, dx, dy, dz, orientation) ou None. Masse, classes, support, charge admissible des porteurs
+    et règle IATA sont contrôlés ; un colis IATA n'est posé que contre un bord du couloir.
     """
     t = dest.type
     if dest.masse + colis.masse > t.masse_max + TOL or not _classes_compatibles(dest, colis, regles):
@@ -652,11 +708,14 @@ def _placer_dans(dest: _Chargement, colis: Colis, params: Parametres, regles: Re
     for oi, (dx, dy, dz) in enumerate(orientations(colis)):
         if dx > t.largeur + TOL or dy > t.longueur + TOL or dz > t.hauteur_max + TOL:
             continue
-        for x, y, z in _candidats(dest.boites, t.largeur, t.longueur, dx, dy):
+        candidats = _candidats(dest.boites, t.largeur, t.longueur, dx, dy)
+        if iata and params.iata_au_bord:
+            candidats = _vers_le_bord(candidats, t.largeur, dx)
+        for x, y, z in candidats:
             if compteur is not None:
                 compteur[0] += 1
             if _position_valide(dest, colis, x, y, z, dx, dy, dz, params):
-                distance_iata = round(min(y, t.longueur - (y + dy)), 6) if iata else 0.0
+                distance_iata = round(min(x, t.largeur - (x + dx)), 6) if iata else 0.0
                 cle = (distance_iata, z, abs(x + dx / 2 - t.largeur / 2) + abs(y + dy / 2 - t.longueur / 2))
                 if meilleur is None or cle < meilleur[0]:
                     meilleur = (cle, x, y, z, dx, dy, dz, oi)
@@ -749,9 +808,10 @@ def _fusionner(chs: list[_Chargement], params: Parametres, regles: ReglesSeparat
 def _recentrer(chs: list[_Chargement], params: Parametres) -> None:
     """Translate chaque tas pour centrer son centre de masse, sans changer ses contacts.
 
-    La translation est limitée par les bords de la palette ; les positions relatives ne changent pas, donc la
-    visibilité des colis IATA non plus.
+    La translation est limitée par les bords de la palette et ne décolle jamais un colis IATA du bord du couloir
+    contre lequel il est posé ; les positions relatives ne changent pas, donc la visibilité des colis IATA non plus.
     """
+    jeu = params.jeu_contact
     for ch in chs:
         bs = ch.boites
         if not bs:
@@ -762,6 +822,15 @@ def _recentrer(chs: list[_Chargement], params: Parametres) -> None:
         cy = sum(b.colis.masse * (b.y1 + b.y2) / 2 for b in bs) / masse
         bas_x, haut_x = max(-b.x1 for b in bs), min(L - b.x2 for b in bs)
         bas_y, haut_y = max(-b.y1 for b in bs), min(W - b.y2 for b in bs)
+        if params.iata_au_bord:
+            for b in bs:
+                if not b.iata:
+                    continue
+                cotes = _cotes_bord(b, L, jeu)
+                if "gauche" in cotes:
+                    haut_x = min(haut_x, TOL - b.x1)          # le colis reste exactement contre le bord gauche
+                if "droite" in cotes:
+                    bas_x = max(bas_x, (L - TOL) - b.x2)      # ... ou contre le bord droit
         tx = min(max(L / 2 - cx, bas_x), haut_x) if bas_x <= haut_x else 0.0
         ty = min(max(W / 2 - cy, bas_y), haut_y) if bas_y <= haut_y else 0.0
         for b in bs:
@@ -774,13 +843,20 @@ def _deplacement_valide(ch: _Chargement, b: _Boite, params: Parametres) -> bool:
         return False
     if not all(_support_ok(c, bs, params) for c in bs if c is not b and abs(c.z1 - b.z2) <= TOL):
         return False
-    return _iata_ok(bs, params)         # le glissement ne doit masquer aucun colis IATA des deux côtés
+    return _iata_ok(bs, params, ch.type.largeur)      # le glissement doit respecter la règle IATA (bord, visibilité)
 
 
 def _glisser(ch: _Chargement, b: _Boite, axe: str, params: Parametres, precision: float) -> float:
-    """Fait glisser ``b`` vers le centre de la palette selon ``axe`` tant que le chargement reste valide."""
+    """Fait glisser ``b`` vers le centre de la palette selon ``axe`` tant que le chargement reste valide.
+
+    Un colis IATA contre un bord du couloir ne glisse pas en x, et un glissement ne doit isoler aucun colis : ``b`` garde
+    un contact s'il en avait un, et chaque colis qui le touchait en garde un aussi.
+    """
     L, W = ch.type.largeur, ch.type.longueur
     x_axe = axe == "x"
+    jeu = params.jeu_contact
+    if x_axe and b.iata and params.iata_au_bord and _cotes_bord(b, L, jeu):
+        return 0.0
     centre_palette = L / 2 if x_axe else W / 2
     centre = (b.x1 + b.x2) / 2 if x_axe else (b.y1 + b.y2) / 2
     ecart = centre_palette - centre
@@ -806,13 +882,19 @@ def _glisser(ch: _Chargement, b: _Boite, axe: str, params: Parametres, precision
     if dmax <= precision:
         return 0.0
     depart = b.x1 if x_axe else b.y1
+    voisins = [o for o in ch.boites if o is not b and _en_contact(b, o, jeu)]      # contacts avant le glissement
+
+    def sans_isolement() -> bool:
+        if voisins and not any(o is not b and _en_contact(b, o, jeu) for o in ch.boites):
+            return False
+        return all(any(c is not o and _en_contact(o, c, jeu) for c in ch.boites) for o in voisins)
 
     def essayer(d: float) -> bool:
         if x_axe:
             b.placer(depart + sens * d, b.y1)
         else:
             b.placer(b.x1, depart + sens * d)
-        return _deplacement_valide(ch, b, params)
+        return _deplacement_valide(ch, b, params) and sans_isolement()
 
     if essayer(dmax):
         return dmax
@@ -869,9 +951,9 @@ def _tasser_vertical(chs: list[_Chargement], params: Parametres, limite: float) 
 
     Recherche de dispositions finales, pas d'une trajectoire de manutention. Les affectations aux palettes ne
     changent pas. Chaque déplacement abaisse strictement la base du colis sans relever son sommet ; il est
-    accepté seulement si le chargement reste valide (collisions, support à 90 %, masse, IATA) et si le retrait
-    du colis ne laisse aucun autre colis sans appui. Plusieurs passages permettent de retirer un support après
-    les colis qu'il portait.
+    accepté seulement si le chargement reste valide (collisions, support à 90 %, masse, charge admissible des
+    porteurs, règle IATA), si le retrait du colis ne laisse aucun autre colis sans appui et s'il n'isole aucun
+    colis. Plusieurs passages permettent de retirer un support après les colis qu'il portait.
     """
     debut = perf_counter()
     hauteur_avant = max((c.hauteur for c in chs), default=0.0)
@@ -881,6 +963,7 @@ def _tasser_vertical(chs: list[_Chargement], params: Parametres, limite: float) 
     modifies: set[int] = set()
     limite_atteinte = False
     support_min = params.support_minimal
+    jeu = params.jeu_contact
 
     def expire() -> bool:
         return perf_counter() - debut >= limite
@@ -905,6 +988,9 @@ def _tasser_vertical(chs: list[_Chargement], params: Parametres, limite: float) 
                 orientations_b = sorted(enumerate(orientations(b.colis)),
                                         key=lambda e: (e[1][2], -e[1][0] * e[1][1], e[1][0], e[1][1]))
                 choix = None
+                isoles_avant = _isoles(toutes, jeu)
+                b_isole = id(b) in isoles_avant
+                isoles_autres = isoles_avant - {id(b)}
                 ch.boites = restants                              # _position_valide ignore ainsi le colis déplacé
                 try:
                     grilles: dict[tuple[float, float], list[tuple[float, float]]] = {}
@@ -932,8 +1018,12 @@ def _tasser_vertical(chs: list[_Chargement], params: Parametres, limite: float) 
                                     if aire < support_min * dx * dy - TOL:
                                         continue
                                 if _position_valide(ch, b.colis, x, y, niveau, dx, dy, dz, params):
-                                    choix = (x, y, niveau, dx, dy, dz, oi)
-                                    break
+                                    candidat = _Boite(b.colis, x, y, niveau, dx, dy, dz, oi)
+                                    isoles_apres = _isoles(restants + [candidat], jeu)
+                                    if (isoles_apres - {id(candidat)} <= isoles_autres
+                                            and (id(candidat) not in isoles_apres or b_isole)):
+                                        choix = (x, y, niveau, dx, dy, dz, oi)
+                                        break
                             if choix is not None or limite_atteinte:
                                 break
                         if choix is not None or limite_atteinte:
@@ -1103,7 +1193,7 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
              f"{vert['emplacements_testes']} emplacements testés, {vert['deplacement_lateral']:.3f} m de déplacement "
              f"latéral cumulé, {vert['deplacement_total']:.3f} m de descente cumulée. Hauteur globale : "
              f"{vert['hauteur_avant']:.1f} → {vert['hauteur_apres']:.1f} cm. Les collisions, les appuis à 90 % et la "
-             "visibilité IATA sont vérifiés après chaque descente.")
+             "règle IATA (bord du couloir, visibilité) sont vérifiés après chaque descente.")
     if not vert["mouvements"]:
         texte += (" Aucun replacement plus bas trouvé parmi les positions testées ; cet échec ne prouve pas qu'aucune "
                   "réorganisation ne serait possible.")

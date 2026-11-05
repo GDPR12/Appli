@@ -11,12 +11,16 @@ Le modèle est celui du notebook (affectation, orientations, capacité, non-chev
 
 - deux classes incompatibles (tableau 9.3.A) ne partagent jamais une palette ;
 - chaque colis dangereux choisit un côté d'accès (``acces_gauche`` ou ``acces_droite``) et aucun colis ne le masque
-  de ce côté : un colis ne masque que si les projections se chevauchent en x et en z, et qu'il passe devant en y.
+  de ce côté. Le notebook mesure cet accès sur l'axe y ; l'application le mesure sur l'axe du couloir (x, les deux
+  côtés de la largeur de 2,74 m) : un colis ne masque que si les projections se chevauchent en y et en z, et qu'il
+  passe devant en x.
 
 Règles de l'application ajoutées au notebook :
 
+- le colis dangereux est posé contre le bord du côté d'accès choisi (``iata_au_bord``) ;
 - séparation d'armement (arme et pièce de sécurité) avec les autres paires incompatibles ;
-- aucun colis lourd sur un colis plus léger, rien sur un colis fragile : contact de support interdit ;
+- aucun colis lourd sur un colis plus léger, rien sur un colis fragile, charge limitée sur un colis en carton :
+  contact de support interdit au-delà de la charge admissible ;
 - palettes candidates : celles de la solution heuristique (10k, BIPAL, TRIPAL, rampe) ;
   objectif = nombre d'emplacements occupés.
 
@@ -31,11 +35,11 @@ from __future__ import annotations
 from itertools import combinations, permutations
 from time import perf_counter
 
-from .geometrie import orientations as orientations_cm
+from .geometrie import orientations as orientations_cm, plafond_charge
 from .iata import ReglesSeparation, regles as regles_par_defaut
 from .modeles import Colis, Parametres, Resultat
 from .iata import classe as classe_de
-from .optimisation import TOL, _Boite, _Chargement, _charge_valide, _cotes_visibles
+from .optimisation import TOL, _Boite, _Chargement, _charge_valide, _cotes_bord, _cotes_visibles
 
 
 def disponible() -> tuple[bool, str]:
@@ -50,9 +54,10 @@ def disponible() -> tuple[bool, str]:
 # Données du modèle (mètres, kilogrammes)
 # ---------------------------------------------------------------------------
 
-def _colis_modele(colis_liste: list[Colis]) -> list[dict]:
+def _colis_modele(colis_liste: list[Colis], params: Parametres) -> list[dict]:
+    """Colis du modèle (mètres). ``r`` = 1 : la hauteur reste verticale ; ``plafond`` : charge admissible dessus (kg)."""
     return [{"id": i, "obj": c, "m": c.masse, "l": c.longueur / 100, "w": c.largeur / 100,
-             "h": c.hauteur / 100, "r": 0 if c.renversable else 1, "fragile": c.fragile, "classe": c.classe,
+             "h": c.hauteur / 100, "r": 1, "plafond": plafond_charge(c, params), "classe": c.classe,
              "iata": classe_de(c.classe).iata}
             for i, c in enumerate(colis_liste)]
 
@@ -150,44 +155,58 @@ def ajouter_non_chevauchement(c):
 
 
 def ajouter_contraintes_iata(c, regles: ReglesSeparation, params: Parametres):
-    """Séparation IATA/armement et accessibilité depuis les côtés en y (cellule IATA de CDP_2).
+    """Séparation IATA/armement, accessibilité depuis les côtés du couloir et colis dangereux contre le bord.
 
-    Tout colis dangereux choisit un côté (gauche : y minimal, droite : y maximal) et aucun autre colis de sa palette
-    ne le masque de ce côté, sauf s'ils sont séparés en x ou en z.
+    Tout colis dangereux choisit un côté (gauche : x minimal, droite : x maximal) et aucun autre colis de sa palette
+    ne le masque de ce côté, sauf s'ils sont séparés en y ou en z (cellule IATA de CDP_3, transposée sur l'axe x).
+    Avec ``iata_au_bord``, il est de plus posé contre le bord du côté choisi.
     """
+    from pyscipopt import quicksum
     modele, colis, I, P, a = c["modele"], c["colis"], c["I"], c["P"], c["a"]
     # Deux classes incompatibles ne peuvent jamais être affectées à la même palette.
     for i, j in combinations(I, 2):
         if regles.motif_incompatibilite(colis[i]["classe"], colis[j]["classe"]):
             for p in P:
                 modele.addCons(a[i, p] + a[j, p] <= 1)
-    c.update(acces_gauche={}, acces_droite={})
-    if not params.iata_acces:
-        return
     separations = c["separations"]
     dangereux = [i for i in I if colis[i]["iata"]]
     acces_gauche = {i: modele.addVar(vtype="B", name=f"acces_iata_gauche_{i}") for i in dangereux}
     acces_droite = {i: modele.addVar(vtype="B", name=f"acces_iata_droite_{i}") for i in dangereux}
     for i in dangereux:
         modele.addCons(acces_gauche[i] + acces_droite[i] == 1)
-    # Depuis la largeur, un autre colis ne masque i que si les projections se chevauchent à la fois
-    # selon la longueur x et la hauteur z.
+    # Depuis le couloir, un autre colis ne masque i que si les projections se chevauchent à la fois
+    # selon la longueur y et la hauteur z.
     for i in dangereux:
         for j in I:
             if i == j:
                 continue
-            separation_xz = (separations[i, j, 0] + separations[j, i, 0] +
+            separation_yz = (separations[i, j, 1] + separations[j, i, 1] +
                              separations[i, j, 2] + separations[j, i, 2])
             for p in P:
-                # Côté gauche (-y) : i doit être devant j, sauf s'ils sont côte à côte en x ou z.
-                modele.addCons(separations[i, j, 1] + separation_xz >= a[i, p] + a[j, p] + acces_gauche[i] - 2)
-                # Côté droit (+y) : ordre inverse selon y.
-                modele.addCons(separations[j, i, 1] + separation_xz >= a[i, p] + a[j, p] + acces_droite[i] - 2)
+                # Côté gauche (-x) : i doit être devant j, sauf s'ils sont côte à côte en y ou z.
+                modele.addCons(separations[i, j, 0] + separation_yz >= a[i, p] + a[j, p] + acces_gauche[i] - 2)
+                # Côté droit (+x) : ordre inverse selon x.
+                modele.addCons(separations[j, i, 0] + separation_yz >= a[i, p] + a[j, p] + acces_droite[i] - 2)
+    # Colis dangereux contre le bord du côté d'accès choisi (centre du colis en mètres, origine au centre palette).
+    if params.iata_au_bord:
+        x, dimensions = c["x"], c["dimensions"]
+        jeu = params.jeu_contact / 100
+        for i in dangereux:
+            li = dimensions[i][0]
+            for p in P:
+                L = c["palettes"][p]["L"]
+                bord_g = modele.addVar(vtype="B", name=f"bord_gauche_{i}_{p}")
+                bord_d = modele.addVar(vtype="B", name=f"bord_droit_{i}_{p}")
+                modele.addCons(bord_g >= a[i, p] + acces_gauche[i] - 1)       # colis sur la palette p, accès à gauche
+                modele.addCons(bord_d >= a[i, p] + acces_droite[i] - 1)
+                modele.addConsIndicator(x[i] - li / 2 <= -L / 2 + jeu, binvar=bord_g)
+                modele.addConsIndicator(-x[i] - li / 2 <= -L / 2 + jeu, binvar=bord_d)
     c.update(acces_gauche=acces_gauche, acces_droite=acces_droite)
 
 
 def ajouter_support_minimal(c, params: Parametres):
-    """Gravité : support minimal de la base ; contact interdit sous un colis plus léger ou fragile."""
+    """Gravité : support minimal de la base ; contact interdit au-delà de la charge admissible du porteur
+    (plus léger, fragile ou en carton)."""
     from pyscipopt import quicksum
     modele, colis, I, P, a = c["modele"], c["colis"], c["I"], c["P"], c["a"]
     x, y, z = c["x"], c["y"], c["z"]
@@ -205,7 +224,7 @@ def ajouter_support_minimal(c, params: Parametres):
                 continue
             lj, wj, hj = dimensions[j]
             contact = modele.addVar(vtype="B", name=f"contact_{i}_{j}")      # i repose sur j
-            if colis[j]["fragile"] or colis[i]["m"] > params.facteur_masse * colis[j]["m"] + 1e-9:
+            if colis[i]["m"] > colis[j]["plafond"] + 1e-9:
                 modele.addCons(contact <= 0)
             modele.addCons(contact + sol_i <= 1)
             for p in P:
@@ -243,7 +262,7 @@ def ajouter_hauteurs(c):
 
 
 def _construire_modele(chs, colis_liste, params, regles, temps_limite):
-    colis, palettes = _colis_modele(colis_liste), _palettes_modele(chs)
+    colis, palettes = _colis_modele(colis_liste, params), _palettes_modele(chs)
     c = creer_modele(colis, palettes, temps_limite)
     ajouter_affectation_et_orientations(c)
     ajouter_reduction_symetries(c)
@@ -279,12 +298,19 @@ def _indices_colis(chs) -> tuple[list[Colis], dict[int, int]]:
     return liste, {id(colis): i for i, colis in enumerate(liste)}
 
 
-def _cote_acces(b: _Boite, ch: _Chargement) -> bool:
-    """Vrai si le colis dangereux est accessible à gauche (choix par défaut), faux s'il ne l'est qu'à droite."""
-    return "gauche" in _cotes_visibles(b, ch.boites) or "droite" not in _cotes_visibles(b, ch.boites)
+def _cote_acces(b: _Boite, ch: _Chargement, params: Parametres) -> bool:
+    """Vrai si le colis dangereux est pris à gauche (x minimal), faux s'il l'est à droite.
+
+    Avec ``iata_au_bord``, on prend le bord contre lequel il est posé et d'où il est visible ; sinon le premier côté
+    visible (gauche par défaut)."""
+    visibles = _cotes_visibles(b, ch.boites)
+    if params.iata_au_bord:
+        candidats = [c for c in _cotes_bord(b, ch.type.largeur, params.jeu_contact) if c in visibles]
+        return (candidats[0] if candidats else "gauche") == "gauche"
+    return "gauche" in visibles or "droite" not in visibles
 
 
-def ajouter_amorce_heuristique(c, chs, indice):
+def ajouter_amorce_heuristique(c, chs, indice, params: Parametres):
     """Transmet à SCIP l'affectation, l'orientation, les coordonnées et le côté d'accès IATA (solution partielle)."""
     modele = c["modele"]
     solution = modele.createPartialSol()
@@ -302,13 +328,13 @@ def ajouter_amorce_heuristique(c, chs, indice):
             for o in range(len(c["orientations"][i])):
                 modele.setSolVal(solution, c["b"][i, o], float(o == choix))
             if i in c["acces_gauche"]:
-                gauche = _cote_acces(b, ch)
+                gauche = _cote_acces(b, ch, params)
                 modele.setSolVal(solution, c["acces_gauche"][i], float(gauche))
                 modele.setSolVal(solution, c["acces_droite"][i], float(not gauche))
     return modele.addSol(solution)
 
 
-def contraindre_amorce_heuristique(c, chs, indice):
+def contraindre_amorce_heuristique(c, chs, indice, params: Parametres):
     """Fixe brièvement le placement afin que SCIP complète lui-même ses variables auxiliaires."""
     modele = c["modele"]
     contraintes = []
@@ -323,7 +349,7 @@ def contraindre_amorce_heuristique(c, chs, indice):
                                 modele.addCons(c["z"][i] == z)))
             contraintes.append(modele.addCons(c["b"][i, _indice_orientation(c, i, b)] == 1))
             if i in c["acces_gauche"]:
-                gauche = _cote_acces(b, ch)
+                gauche = _cote_acces(b, ch, params)
                 contraintes.append(modele.addCons(c["acces_gauche"][i] == int(gauche)))
                 contraintes.append(modele.addCons(c["acces_droite"][i] == int(not gauche)))
     return contraintes
@@ -403,8 +429,8 @@ def reduire_nombre_palettes(chs: list[_Chargement], params: Parametres, regles: 
 
     modele.setObjective(0.0, "minimize")
     contraintes_initiales = [modele.addCons(somme_positions() <= maximum)]
-    amorce_acceptee = ajouter_amorce_heuristique(c, chs, indice)
-    contraintes_initiales.extend(contraindre_amorce_heuristique(c, chs, indice))
+    amorce_acceptee = ajouter_amorce_heuristique(c, chs, indice, params)
+    contraintes_initiales.extend(contraindre_amorce_heuristique(c, chs, indice, params))
     debut = perf_counter()
     regler_limite(temps_limite)
     modele.optimize()

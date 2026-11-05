@@ -1,0 +1,10 @@
+{
+  "_description": "Règles de l'import du manifeste Excel (CARGO). Les mots-clés sont comparés à la colonne « Proper Shipping Name » (sans accents ni casse, mots entiers). Les règles sont évaluées dans l'ordre et la première qui correspond l'emporte : « WEAPONRY SECURITY PARTS » contient le mot WEAPONRY mais doit donner une pièce de sécurité, d'où l'ordre. Une classe IATA lue dans la colonne « Class/Div » l'emporte sur ces règles. La température indiquée dans les désignations (+15 +25 DEGREES C) est ignorée.",
+  "masse_minimale": 0.1,
+  "regles_classe": [
+    {"classe": "SECU", "libelle": "pièce de sécurité d'arme",
+     "mots_cles": ["SECURITY PARTS", "SECURITY PART", "WEAPONRY SECURITY", "PIECES DE SECURITE", "PIECE DE SECURITE", "PIECES DE SECU", "PIECE DE SECU", "SECU"]},
+    {"classe": "ARME", "libelle": "arme",
+     "mots_cles": ["WEAPONS", "WEAPON", "WEAPONRY", "FIREARMS", "FIREARM", "ARMES", "ARME", "ARMEMENT"]}
+  ]
+}

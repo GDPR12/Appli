@@ -184,3 +184,8 @@ legend { font-weight: 600; font-size: 13px; padding: 0 6px; }
 @media (max-width: 1250px) {
   .disposition { grid-template-columns: 340px 1fr 300px; }
 }
+
+/* Import Excel */
+.resume-import { margin: 8px 0 12px; padding-left: 18px; line-height: 1.7; }
+.avertissements-import { margin: 4px 0 10px; padding-left: 18px; color: var(--alerte); font-size: 13px; }
+.cases { margin-top: 2px; }

@@ -13,8 +13,8 @@ def colis_aleatoires(n, graine, speciaux=True):
     for i in range(n):
         classe = rng.choice(["", "", "", "", "3", "1", "5.1", "2.2", "8", "9L", "ARME", "SECU"]) if speciaux else ""
         res.append(Colis(f"C{i}", rng.randint(30, 120), rng.randint(30, 100), rng.randint(20, 90),
-                         rng.randint(5, 400), renversable=rng.random() < 0.7, classe=classe,
-                         fragile=rng.random() < 0.05))
+                         rng.randint(5, 400), emballage=rng.choice(["", "bois", "carton", "fibre", "metal"]),
+                         classe=classe, fragile=rng.random() < 0.05))
     return res
 
 
@@ -40,8 +40,9 @@ def test_lourd_jamais_sur_leger():
                     assert p.colis.masse <= q.colis.masse
 
 
-def test_sens_obligatoire_respecte():
-    colis = [Colis(f"L{i}", 150, 40, 40, 50, renversable=False) for i in range(6)]
+def test_la_hauteur_reste_verticale():
+    """Plus de colis renversable : un colis garde toujours sa hauteur saisie à la verticale."""
+    colis = [Colis(f"L{i}", 150, 40, 40, 50) for i in range(6)]
     r = optimiser(colis, Parametres(duree_recherche=0.5))
     for pal in r.palettes:
         for p in pal.placements:
@@ -63,7 +64,7 @@ def test_arme_et_piece_de_securite_separees():
 
 
 def test_colis_trop_long_sur_bipal():
-    colis = [Colis("long", 320, 80, 60, 400, renversable=False), Colis("petit", 50, 50, 50, 30)]
+    colis = [Colis("long", 320, 80, 60, 400), Colis("petit", 50, 50, 50, 30)]
     r = optimiser(colis, Parametres(duree_recherche=0.5))
     assert r.palettes[0].type.code == "BIPAL"
     assert r.positions_utilisees == 2
@@ -73,7 +74,7 @@ def test_colis_trop_long_sur_bipal():
 
 def test_colis_impossible_en_vrac():
     p = Parametres(duree_recherche=0.5, autoriser_tripal=False)
-    colis = [Colis("helice", 500, 80, 60, 400, renversable=False), Colis("ok", 50, 50, 50, 30)]
+    colis = [Colis("helice", 500, 80, 60, 400), Colis("ok", 50, 50, 50, 30)]
     r = optimiser(colis, p)
     assert [c.numero for c, _ in r.non_places] == ["helice"]
     assert "vrac" in r.non_places[0][1]
@@ -93,19 +94,74 @@ def test_capacite_masse_palette():
     assert erreurs(r) == []
 
 
-def test_colis_iata_toujours_visibles_a_chaque_etape():
-    """Règle de CDP_2 : chaque colis dangereux reste visible depuis au moins un côté, à chaque étape du calcul."""
-    from palettiseur.geometrie import cotes_visibles
+def test_colis_iata_visibles_et_sur_le_bord_a_chaque_etape():
+    """Règle de CDP_3 sur l'axe du couloir : chaque colis dangereux est visible depuis un côté ET posé contre ce bord."""
+    from palettiseur.geometrie import cotes_bord, cotes_visibles
     from palettiseur.iata import classe as classe_de
     colis = [Colis(f"d{i}", 40, 40, 40, 30, classe=c) for i, c in enumerate(["3", "3", "9", "2.2", "8"])]
     colis += [Colis(f"o{i}", 50, 40, 40, 30) for i in range(30)]
-    r = optimiser(colis, Parametres(duree_recherche=0.8))
+    params = Parametres(duree_recherche=0.8)
+    assert params.largeur_utile == 246
+    r = optimiser(colis, params)
     for etape in r.etapes:
         for pal in etape.palettes:
             for p in pal.placements:
                 if classe_de(p.colis.classe).iata:
-                    assert cotes_visibles(p, pal.placements), (etape.cle, p.colis.numero)
+                    visibles = cotes_visibles(p, pal.placements)
+                    bords = cotes_bord(p, pal.type.largeur, params.jeu_contact)
+                    assert set(visibles) & set(bords), (etape.cle, p.colis.numero, visibles, bords)
     assert erreurs(r) == []
+
+
+def test_aucun_colis_ne_deborde_dans_le_couloir():
+    """Largeur 274 cm moins 14 cm de couloir de chaque côté : tous les colis tiennent dans les 246 cm utiles."""
+    r = optimiser(colis_aleatoires(40, 5), Parametres(duree_recherche=0.8, graine=5))
+    assert r.parametres.largeur_utile == 246
+    for pal in r.palettes:
+        assert pal.type.largeur == 246 and pal.type.longueur in (224, 448, 672)
+        for p in pal.placements:
+            assert p.x >= -1e-6 and p.x2 <= 246 + 1e-6 and p.y >= -1e-6 and p.y2 <= pal.type.longueur + 1e-6
+
+
+def test_derogation_couloir_utilise_toute_la_largeur():
+    """270 cm de large passent sur les 274 cm du plateau, mais pas sur les 246 cm utiles : il faut alors un BIPAL."""
+    r = optimiser([Colis("large", 270, 100, 50, 100)], Parametres(duree_recherche=0.3, derogation_couloir=True))
+    assert r.palettes[0].type.largeur == 274 and r.palettes[0].type.code == "10K" and not r.non_places
+    r = optimiser([Colis("large", 270, 100, 50, 100)], Parametres(duree_recherche=0.3))
+    assert not r.non_places and r.palettes[0].type.code == "BIPAL"
+    assert all(p.dx <= 246 for pal in r.palettes for p in pal.placements)
+
+
+def test_rien_de_lourd_sur_un_carton():
+    """Les cartons ne sont pas écrasés : sans charge autorisée, aucun colis n'est posé dessus."""
+    lot = [Colis(f"K{i}", 60, 60, 40, 40, emballage="carton") for i in range(8)]
+    lot += [Colis(f"B{i}", 60, 60, 40, 30, emballage="bois") for i in range(8)]
+    r = optimiser(lot, Parametres(duree_recherche=0.8))
+    assert erreurs(r) == []
+    for pal in r.palettes:
+        for p in pal.placements:
+            if p.colis.emballage == "carton":
+                for q in pal.placements:
+                    assert not (q is not p and abs(q.z - p.z2) < 1e-6 and q.x < p.x2 and p.x < q.x2 and q.y < p.y2 and p.y < q.y2)
+
+
+def test_charge_maximale_sur_carton_autorise_un_colis_leger():
+    lot = [Colis("carton", 100, 100, 40, 80, emballage="carton"), Colis("leger", 100, 100, 40, 20)]
+    sans = optimiser(lot, Parametres(duree_recherche=0.5, support_minimal=1.0))
+    assert erreurs(sans) == []
+    avec = optimiser(lot, Parametres(duree_recherche=0.5, charge_max_carton=25))
+    assert erreurs(avec) == []
+
+
+def test_aucun_colis_isole():
+    """Règle du projet : un colis ne reste jamais seul à l'écart des autres sur sa palette."""
+    from palettiseur.geometrie import en_contact
+    r = optimiser(colis_aleatoires(40, 4, speciaux=False), Parametres(duree_recherche=1.0, graine=4))
+    for pal in r.palettes:
+        if len(pal.placements) < 2:
+            continue
+        for p in pal.placements:
+            assert any(q is not p and en_contact(p, q) for q in pal.placements), p.colis.numero
 
 
 def test_les_colis_dangereux_sont_places_en_premier_les_plus_incompatibles_d_abord():

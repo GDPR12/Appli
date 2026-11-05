@@ -9,18 +9,19 @@ from datetime import datetime
 
 from .modeles import Colis, Resultat
 
-COLONNES_CSV = ["numero", "longueur", "largeur", "hauteur", "masse", "renversable", "classe", "fragile", "commentaire"]
+COLONNES_CSV = ["numero", "longueur", "largeur", "hauteur", "masse", "classe", "fragile", "emballage", "reference", "commentaire"]
 
 # Noms de colonnes acceptés à l'import (minuscules, sans accents)
 ALIAS = {
-    "numero": ["numero", "numéro", "id", "n°", "no", "colis", "sscc", "reference", "référence", "ref"],
+    "numero": ["numero", "numéro", "id", "n°", "no", "colis", "ref"],
     "longueur": ["longueur", "long", "l", "length"],
     "largeur": ["largeur", "larg", "w", "width"],
     "hauteur": ["hauteur", "haut", "h", "height"],
     "masse": ["masse", "poids", "kg", "weight", "m"],
-    "renversable": ["renversable", "retournable", "r", "reversible"],
     "classe": ["classe", "class", "iata", "dgr", "type", "special", "spécial"],
     "fragile": ["fragile"],
+    "emballage": ["emballage", "matiere", "matiere d'emballage", "packing", "type of packing", "materiau"],
+    "reference": ["reference", "serie", "numero de serie", "serial", "sscc"],
     "commentaire": ["commentaire", "comment", "description", "libelle", "libellé", "contenu", "remarque"],
 }
 
@@ -70,7 +71,6 @@ def lire_csv(texte: str) -> tuple[list[Colis], list[str]]:
                 d[champ] = ligne[idx].strip()
         if not d.get("numero"):
             d["numero"] = str(num - 1)
-        d.setdefault("renversable", "oui")
         try:
             c = Colis.depuis_dict(d)
         except (TypeError, ValueError) as e:
@@ -89,8 +89,8 @@ def ecrire_csv(colis: list[Colis]) -> str:
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(COLONNES_CSV)
     for c in colis:
-        w.writerow([c.numero, c.longueur, c.largeur, c.hauteur, c.masse,
-                    "oui" if c.renversable else "non", c.classe, "oui" if c.fragile else "non", c.commentaire])
+        w.writerow([c.numero, c.longueur, c.largeur, c.hauteur, c.masse, c.classe, "oui" if c.fragile else "non",
+                    c.emballage, c.reference, c.commentaire])
     return sortie.getvalue()
 
 
@@ -99,16 +99,16 @@ def plan_csv(resultat: Resultat) -> str:
     sortie = io.StringIO()
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(["palette", "type_palette", "zone", "numero_colis", "classe", "masse_kg", "x_cm", "y_cm", "z_cm",
-                "dim_x_cm", "dim_y_cm", "dim_z_cm", "renversable", "fragile", "commentaire"])
+                "dim_x_cm", "dim_y_cm", "dim_z_cm", "fragile", "emballage", "reference", "commentaire"])
     for pal in resultat.palettes:
         for p in sorted(pal.placements, key=lambda p: (p.z, p.y, p.x)):
             c = p.colis
             w.writerow([pal.numero, pal.type.code, pal.zone, c.numero, c.classe, c.masse,
                         round(p.x, 1), round(p.y, 1), round(p.z, 1), p.dx, p.dy, p.dz,
-                        "oui" if c.renversable else "non", "oui" if c.fragile else "non", c.commentaire])
+                        "oui" if c.fragile else "non", c.emballage, c.reference, c.commentaire])
     for c, motif in resultat.non_places:
         w.writerow(["", "", "NON PLACÉ", c.numero, c.classe, c.masse, "", "", "", c.longueur, c.largeur, c.hauteur,
-                    "oui" if c.renversable else "non", "oui" if c.fragile else "non", motif])
+                    "oui" if c.fragile else "non", c.emballage, c.reference, motif])
     return sortie.getvalue()
 
 

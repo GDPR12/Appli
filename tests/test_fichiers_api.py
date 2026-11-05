@@ -5,7 +5,7 @@ from palettiseur.modeles import Colis
 
 
 def test_csv_aller_retour():
-    colis = [Colis("A-1", 80, 60, 50, 120.5, renversable=False, classe="3", commentaire="jerricans ; x", fragile=True)]
+    colis = [Colis("A-1", 80, 60, 50, 120.5, classe="3", commentaire="jerricans ; x", fragile=True, emballage="carton", reference="1234-5678")]
     texte = fichiers.ecrire_csv(colis)
     lus, avert = fichiers.lire_csv(texte)
     assert avert == []
@@ -46,4 +46,9 @@ def test_configuration():
     assert any(c["code"] == "3" for c in cfg["classes"])
     assert "1" in cfg["incompatibilites"]["3"]
     assert cfg["parametres"]["largeur_palette"] == 274
+    assert cfg["parametres"]["longueur_palette"] == 224
+    assert cfg["parametres"]["reduction_couloir"] == 14
+    assert cfg["parametres"]["iata_au_bord"] is True
+    assert {"carton", "fibre", "bois"} <= {e["code"] for e in cfg["emballages"]}
+    assert [e["cle"] for e in cfg["exemples"]] == ["cargo", "cdp", "iata"]
     assert cfg["moteurs"][0]["code"] == "heuristique"

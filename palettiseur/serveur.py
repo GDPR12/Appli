@@ -104,6 +104,8 @@ class Gestionnaire(BaseHTTPRequestHandler):
                 return self._json(resultat)
             if chemin == "/api/importer":
                 return self._json(api.importer_texte(corps.get("texte", "")))
+            if chemin == "/api/importer_cargo":
+                return self._json(api.importer_cargo(corps.get("nom", ""), corps.get("contenu", "")))
             if chemin == "/api/exporter":
                 return self._json(self._exporter(corps))
             return self._json({"erreur": "route inconnue"}, 404)

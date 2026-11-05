@@ -19,7 +19,9 @@
   </div>
   <div class="actions">
     <select id="sel-exemple" class="secondaire" title="Charger un jeu de colis d'exemple"><option value="">Exemples…</option></select>
-    <button id="btn-importer" class="secondaire" title="Importer une liste de colis (CSV MEAT/SILRIA ou projet JSON)">Importer…</button>
+    <button id="btn-importer-excel" class="secondaire" title="Importer un manifeste de fret au format Excel (CARGO.xlsx)">Importer Excel…</button>
+    <input type="file" id="fichier-excel" accept=".xlsx,.xlsm" hidden>
+    <button id="btn-importer" class="secondaire" title="Importer une liste de colis (CSV MEAT/SILRIA ou projet JSON)">Importer CSV/JSON…</button>
     <input type="file" id="fichier-import" accept=".csv,.txt,.json" hidden>
     <button id="btn-enregistrer" class="secondaire" title="Enregistrer la liste de colis et les paramètres (JSON)">Enregistrer</button>
     <button id="btn-parametres" class="secondaire" title="Paramètres de l'avion, des palettes et des règles">⚙ Paramètres</button>
@@ -50,10 +52,14 @@
         <label>Colis spécial
           <select id="f-classe"></select>
         </label>
-        <div class="grille-3 cases">
-          <label class="case"><input type="checkbox" id="f-renversable" checked> Renversable</label>
-          <label class="case"><input type="checkbox" id="f-fragile"> Fragile</label>
+        <div class="grille-2">
+          <label>Matière d'emballage
+            <select id="f-emballage"></select>
+          </label>
           <label>Quantité<input type="number" id="f-quantite" min="1" step="1" value="1"></label>
+        </div>
+        <div class="cases">
+          <label class="case"><input type="checkbox" id="f-fragile"> Fragile (rien dessus)</label>
         </div>
         <label>Commentaire
           <input type="text" id="f-commentaire" placeholder="Contenu, remarque… (facultatif)">
@@ -79,12 +85,12 @@
         <table id="table-colis">
           <thead>
             <tr>
-              <th>N°</th><th>L × l × h (cm)</th><th>kg</th><th>Sens</th><th>Classe</th><th>Palette</th><th></th>
+              <th>N°</th><th>L × l × h (cm)</th><th>kg</th><th>Emb.</th><th>Classe</th><th>Palette</th><th></th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
-        <p class="vide" id="liste-vide">Aucun colis. Ajoutez des colis avec le formulaire, importez un fichier CSV ou chargez l'exemple.</p>
+        <p class="vide" id="liste-vide">Aucun colis. Ajoutez des colis avec le formulaire, importez un manifeste Excel ou un fichier CSV, ou chargez un exemple.</p>
       </div>
       <p class="aide">Masse totale : <strong id="masse-totale">0 kg</strong> · Volume : <strong id="volume-total">0 m³</strong></p>
     </section>
@@ -163,10 +169,11 @@
     <div class="colonnes-params">
       <fieldset>
         <legend>Palette 10k</legend>
-        <label>Largeur côté couloir (cm)<input type="number" data-param="largeur_palette" step="1"></label>
-        <label>Longueur (cm)<input type="number" data-param="longueur_palette" step="1"></label>
-        <label>Réduction côté couloir, par côté (cm)<input type="number" data-param="reduction_couloir" step="1"></label>
-        <label class="case"><input type="checkbox" data-param="derogation_couloir"> Dérogation : utiliser toute la largeur (2,74 m)</label>
+        <label>Longueur, dans le sens de l'avion (cm)<input type="number" data-param="longueur_palette" step="1"></label>
+        <label>Largeur, en travers de l'avion (cm)<input type="number" data-param="largeur_palette" step="1"></label>
+        <label title="Espace laissé libre pour le couloir sur chacun des deux côtés de la largeur">Espace de couloir à laisser, par côté (cm)<input type="number" data-param="reduction_couloir" step="1" min="0"></label>
+        <label class="case"><input type="checkbox" data-param="derogation_couloir"> Dérogation : utiliser toute la largeur, sans couloir</label>
+        <p class="aide" id="aide-largeur-utile"></p>
         <label>Hauteur maximale (cm)<input type="number" data-param="hauteur_max" step="1"></label>
         <label>Masse brute max en soute (kg)<input type="number" data-param="masse_max_soute" step="1"></label>
         <label>Masse brute max sur la rampe (kg)<input type="number" data-param="masse_max_rampe" step="1"></label>
@@ -189,7 +196,9 @@
         <legend>Règles de confection</legend>
         <label>Support minimal de la base (%)<input type="number" data-param="support_minimal" data-pourcent="1" step="5" min="10" max="100"></label>
         <label title="1,0 = un colis ne peut être posé que sur des colis au moins aussi lourds que lui">Facteur masse dessus / dessous<input type="number" data-param="facteur_masse" step="0.1" min="0.1"></label>
-        <label class="case" title="Un colis dangereux ne doit pas être masqué des deux côtés (gauche et droite) par d'autres colis"><input type="checkbox" data-param="iata_acces"> Colis IATA visibles depuis un côté</label>
+        <label class="case" title="Un colis IATA doit être posé contre l'un des deux bords côté couloir, et rester visible depuis ce bord"><input type="checkbox" data-param="iata_au_bord"> Colis IATA posés sur le bord, côté couloir</label>
+        <label title="Matières d'emballage que l'on ne doit pas écraser, séparées par des virgules (codes : carton, fibre, bois, metal, plastique, composite, palette)">Matières à ne pas écraser<input type="text" data-param="emballages_ecrasables" id="param-ecrasables"></label>
+        <label title="Masse maximale d'un colis posé sur un colis dans une matière à ne pas écraser. 0 = rien dessus.">Charge maximale sur ces matières (kg)<input type="number" data-param="charge_max_carton" step="1" min="0"></label>
         <label>Tolérance de contact (cm)<input type="number" data-param="jeu_contact" step="0.1" min="0"></label>
       </fieldset>
       <fieldset>
@@ -208,6 +217,18 @@
       <button type="submit" class="primaire" id="btn-params-ok">Enregistrer</button>
     </div>
   </form>
+</dialog>
+
+<!-- ===================== Résumé d'un import Excel ===================== -->
+<dialog id="dlg-import">
+  <h2>Manifeste importé</h2>
+  <div id="contenu-import"></div>
+  <div class="boutons-dialogue">
+    <span class="espace"></span>
+    <button type="button" class="secondaire" id="btn-import-annuler">Annuler</button>
+    <button type="button" class="secondaire" id="btn-import-ajouter">Ajouter à la liste</button>
+    <button type="button" class="primaire" id="btn-import-remplacer">Remplacer la liste</button>
+  </div>
 </dialog>
 
 <!-- ===================== Fiche palette imprimable ===================== -->

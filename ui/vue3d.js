@@ -1,6 +1,7 @@
 /* ===================== Vue 3D des palettes (Three.js) =====================
- * Repère : X = largeur de la palette (bandes de passage de 20 cm en x = 0 et x = L),
- * Y = longueur (sens de l'avion ; accès IATA « gauche » en y = 0 et « droite » en y = W), Z = vertical. Unités : mètres dans la scène.
+ * Repère : X = largeur de la palette (274 cm physiques, dont une bande de couloir de 14 cm de chaque côté, en x = 0 et
+ * x = L pour la zone utile), Y = longueur (224 cm, sens de l'avion), Z = vertical. Les colis IATA sont posés contre
+ * l'un des deux bords côté couloir. Unités : mètres dans la scène.
  */
 import * as THREE from './vendor/three.module.min.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
@@ -20,7 +21,7 @@ export function couleurPoids(t) {
   return '#' + a.lerp(b, t * n - i).getHexString();
 }
 
-function spriteTexte(texte, { taille = 48, fond = 'rgba(255,255,255,0.88)', couleur = '#111827', gras = true } = {}) {
+function spriteTexte(texte, { taille = 48, fond = 'rgba(255,255,255,0.88)', couleur = '#111827', gras = true, devant = false } = {}) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   const police = `${gras ? 'bold ' : ''}${taille}px "Segoe UI", Arial, sans-serif`;
@@ -39,7 +40,7 @@ function spriteTexte(texte, { taille = 48, fond = 'rgba(255,255,255,0.88)', coul
   ctx.fillText(texte, largeur / 2, hauteur / 2);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  const materiau = new THREE.SpriteMaterial({ map: texture, depthTest: true, transparent: true });
+  const materiau = new THREE.SpriteMaterial({ map: texture, depthTest: !devant, transparent: true });
   const sprite = new THREE.Sprite(materiau);
   sprite.userData.ratio = largeur / hauteur;
   return sprite;
@@ -158,7 +159,7 @@ export class Vue3D {
 
   construirePalette(groupe, pal, ensemble) {
     const L = pal.largeur * CM, W = pal.longueur * CM, H = pal.hauteur_max * CM;
-    const Lphys = Math.max(L, (this.options.largeurPhysique || pal.largeur) * CM * (pal.positions >= 1 ? 1 : 1));
+    const Lphys = Math.max(L, (pal.largeur_physique || this.options.largeurPhysique || pal.largeur) * CM);
     const marge = (Lphys - L) / 2;
     const epaisseur = 0.08;
 
@@ -172,7 +173,7 @@ export class Vue3D {
     utile.position.set(L / 2, W / 2, 0.001);
     groupe.add(utile);
     if (marge > 0.005) {
-      // Bandes de 20 cm réservées au passage côté couloir (hachures simulées par une couleur sombre).
+      // Bandes réservées au couloir, de chaque côté de la zone utile (couleur sombre).
       for (const x of [-marge / 2, L + marge / 2]) {
         const bande = new THREE.Mesh(new THREE.PlaneGeometry(marge, W), new THREE.MeshLambertMaterial({ color: 0x6b7480 }));
         bande.position.set(x, W / 2, 0.0015);
@@ -195,19 +196,11 @@ export class Vue3D {
     env.position.set(L / 2, W / 2, H / 2);
     env.computeLineDistances();
     groupe.add(env);
-    // Bandes de passage (seulement si la largeur est réduite) et côtés d'accès IATA en y
-    if (marge > 0.005) {
-      for (const x of [-marge - 0.18, L + marge + 0.18]) {
-        const s = spriteTexte('PASSAGE', { taille: 40, fond: 'rgba(20,33,61,0.85)', couleur: '#ffffff' });
-        s.position.set(x, W / 2, 0.02);
-        s.scale.set(0.2 * s.userData.ratio, 0.2, 1);
-        groupe.add(s);
-      }
-    }
-    for (const [y, texte] of [[-0.2, 'ACCÈS GAUCHE'], [W + 0.2, 'ACCÈS DROITE']]) {
-      const s = spriteTexte(texte, { taille: 40, fond: 'rgba(185,28,28,0.88)', couleur: '#ffffff' });
-      s.position.set(L / 2, y, 0.02);
-      s.scale.set(0.2 * s.userData.ratio, 0.2, 1);
+    // Couloirs : un de chaque côté (x minimal et x maximal). Les colis IATA sont posés contre ces bords.
+    for (const [x, texte] of [[-marge - 0.22, 'COULOIR'], [L + marge + 0.22, 'COULOIR']]) {
+      const s = spriteTexte(texte, { taille: 40, fond: 'rgba(20,33,61,0.85)', couleur: '#ffffff', devant: true });
+      s.position.set(x, W / 2, 0.05);
+      s.scale.set(0.18 * s.userData.ratio, 0.18, 1);
       groupe.add(s);
     }
     // Étiquette de la palette

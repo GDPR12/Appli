@@ -2,17 +2,23 @@
 
 Unités : centimètres pour les longueurs, kilogrammes pour les masses.
 
-Repère d'une palette : origine au coin de la palette, axe X dans la largeur
-« couloir » (2,74 m, réduite à 2,34 m), axe Y dans le sens de l'avion
-(2,24 m ; 4,48 m pour une BIPAL), axe Z vers le haut. Comme dans le notebook CDP_2,
-un colis IATA doit rester visible depuis l'un des deux côtés de l'axe Y : « gauche »
-(y minimal) ou « droite » (y maximal).
+Repère d'une palette : origine au coin de la palette.
+
+- axe X : la largeur, 2,74 m en travers de l'avion. Les deux extrémités de cet axe sont les côtés du couloir :
+  on y laisse un passage (14 cm par côté par défaut), d'où une largeur utile de 2,46 m ;
+- axe Y : la longueur, 2,24 m dans le sens de l'avion (4,48 m pour une BIPAL) ;
+- axe Z : vers le haut.
+
+Règle IATA (notebook CDP_3, appliquée sur l'axe du couloir) : un colis dangereux est posé contre l'un des deux
+bords en x, « gauche » (x minimal) ou « droite » (x maximal), et aucun colis ne le masque de ce côté.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from typing import Any
+
+from .emballages import emballages
 
 
 # ---------------------------------------------------------------------------
@@ -28,10 +34,11 @@ class Colis:
     largeur: float           # cm
     hauteur: float           # cm (verticale dans le sens « de base »)
     masse: float             # kg
-    renversable: bool = True  # False : la hauteur doit rester verticale (liquides…)
     classe: str = ""          # code de colis spécial (voir iata.py), "" = ordinaire
     commentaire: str = ""
     fragile: bool = False     # rien ne doit être posé dessus
+    emballage: str = ""       # code de matière d'emballage (voir emballages.py), "" = non précisée
+    reference: str = ""       # numéro de série complet (manifeste), affiché dans le détail du colis
 
     # ---- propriétés dérivées -------------------------------------------------
     @property
@@ -41,6 +48,7 @@ class Colis:
     @property
     def special(self) -> bool:
         return bool(self.classe)
+
 
     def valider(self) -> list[str]:
         """Retourne la liste des problèmes de saisie (vide si tout va bien)."""
@@ -77,10 +85,11 @@ class Colis:
             largeur=nombre("largeur"),
             hauteur=nombre("hauteur"),
             masse=nombre("masse"),
-            renversable=booleen("renversable", True),
             classe=str(d.get("classe", "") or "").strip(),
             commentaire=str(d.get("commentaire", "") or ""),
             fragile=booleen("fragile", False),
+            emballage=emballages().code_depuis_texte(d.get("emballage", "")),
+            reference=str(d.get("reference", "") or "").strip(),
         )
 
     def vers_dict(self) -> dict[str, Any]:
@@ -195,13 +204,18 @@ class Palette:
         sol = sum(p.base for p in self.placements if p.z <= 1e-6)
         return min(1.0, sol / self.type.surface)
 
-    def vers_dict(self, tare: float = 0.0) -> dict[str, Any]:
+    def vers_dict(self, tare: float = 0.0, largeur_physique: float | None = None) -> dict[str, Any]:
+        """Résumé sérialisable. ``largeur_physique`` : largeur du plateau (274 cm) ; l'écart avec la largeur utile
+        donne le passage laissé de chaque côté (côtés du couloir)."""
         cx, cy, cz = self.centre_de_masse()
+        physique = max(largeur_physique or self.type.largeur, self.type.largeur)
         return {
             "numero": self.numero,
             "type": self.type.code,
             "libelle_type": self.type.libelle,
             "largeur": self.type.largeur,
+            "largeur_physique": physique,
+            "marge_couloir": round((physique - self.type.largeur) / 2, 3),
             "longueur": self.type.longueur,
             "hauteur_max": self.type.hauteur_max,
             "masse_max": self.type.masse_max,
@@ -227,13 +241,13 @@ class Palette:
 class Parametres:
     """Paramètres de l'avion, des palettes et de l'algorithme (valeurs par défaut A400M)."""
 
-    # Palette 10k : 2,74 x 2,24 m. La largeur est réduite à 2,34 m (20 cm de
-    # chaque côté) pour laisser le passage côté couloir, sauf dérogation.
+    # Palette 10k : 224 cm de longueur (sens de l'avion) sur 274 cm de largeur (en travers). Le couloir est sur les
+    # deux côtés de la largeur : on y laisse 14 cm de chaque côté (largeur utile 246 cm), sauf dérogation.
     largeur_palette: float = 274.0
     longueur_palette: float = 224.0
-    reduction_couloir: float = 20.0
+    reduction_couloir: float = 14.0
     derogation_couloir: bool = False
-    hauteur_max: float = 254.0           # cm : 2,54 m, hauteur des palettes du notebook CDP_2
+    hauteur_max: float = 254.0           # cm : 2,54 m, hauteur des palettes du notebook CDP_3
     masse_max_soute: float = 4536.0      # kg, masse brute maximale d'une 10k en soute
     masse_max_rampe: float = 3000.0      # kg, masse brute maximale sur la rampe
     tare_palette: float = 130.0          # kg, masse à vide d'une palette 10k (HCU-6/E)
@@ -252,7 +266,10 @@ class Parametres:
     # Règles de confection
     support_minimal: float = 0.90        # part de la base qui doit reposer sur quelque chose
     facteur_masse: float = 1.0           # un colis posé doit avoir masse <= facteur x masse du support
-    iata_acces: bool = True              # colis IATA visibles depuis au moins un côté (règle de CDP_2)
+    iata_au_bord: bool = True            # colis IATA contre un bord côté couloir (en plus de la règle de visibilité)
+    emballages_ecrasables: str = field(default_factory=lambda: ",".join(emballages().codes_ecrasables()))
+    # matières d'emballage à ne pas écraser, codes séparés par des virgules (carton et fibre par défaut)
+    charge_max_carton: float = 0.0       # kg : masse maximale d'un colis posé sur un colis dans une de ces matières (0 = rien dessus)
     jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
 
     # Algorithme
@@ -261,11 +278,15 @@ class Parametres:
     graine: int = 0
     moteur: str = "heuristique"          # "heuristique" ou "scip"
 
+    def emballage_ecrasable(self, code: str) -> bool:
+        """Le colis dans cette matière d'emballage ne doit-il pas être écrasé ?"""
+        return bool(code) and code in {c.strip() for c in self.emballages_ecrasables.split(",")}
+
     @property
     def largeur_utile(self) -> float:
         if self.derogation_couloir:
             return self.largeur_palette
-        return self.largeur_palette - 2 * self.reduction_couloir
+        return max(0.0, self.largeur_palette - 2 * self.reduction_couloir)
 
     @property
     def masse_nette_max_soute(self) -> float:

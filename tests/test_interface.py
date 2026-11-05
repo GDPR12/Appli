@@ -53,11 +53,14 @@ def test_parcours_complet(app):
     page.fill("#f-longueur", "80"); page.fill("#f-largeur", "60"); page.fill("#f-hauteur", "50")
     page.fill("#f-masse", "120")
     page.select_option("#f-classe", "3")
-    page.uncheck("#f-renversable")
+    assert page.locator("#f-renversable").count() == 0                         # plus de notion de renversement
+    page.select_option("#f-emballage", "carton")
+    page.check("#f-fragile")
     page.fill("#f-commentaire", "Carburant")
     page.click("#btn-ajouter")
     colis = page.evaluate("window.palettiseur.etat.colis")
-    assert len(colis) == 1 and colis[0]["classe"] == "3" and colis[0]["renversable"] is False
+    assert len(colis) == 1 and colis[0]["classe"] == "3" and colis[0]["emballage"] == "carton" and colis[0]["fragile"] is True
+    assert "renversable" not in colis[0]
 
     # --- numéro en double refusé par la validation de l'application
     page.fill("#f-numero", colis[0]["numero"])
@@ -69,7 +72,9 @@ def test_parcours_complet(app):
     # --- exemple du notebook : 54 colis et ses paramètres
     page.select_option("#sel-exemple", "cdp")
     page.wait_for_function("window.palettiseur.etat.colis.length === 54")
-    assert page.evaluate("window.palettiseur.etat.parametres.derogation_couloir") is True
+    params = page.evaluate("window.palettiseur.etat.parametres")
+    assert params["derogation_couloir"] is False and params["reduction_couloir"] == 14
+    assert params["longueur_palette"] == 224 and params["largeur_palette"] == 274 and params["iata_au_bord"] is True
     page.evaluate("window.palettiseur.etat.parametres.duree_recherche = 3")
 
     # --- calcul
@@ -121,15 +126,23 @@ def test_parcours_complet(app):
     # --- colis dangereux : l'accès IATA est affiché
     page.evaluate("window.palettiseur.selectionnerColis('2')")                 # colis 2 : classe IATA 3
     panneau = page.inner_text("#contenu-colis")
-    assert "étiquette visible" in panneau and ("gauche" in panneau or "droite" in panneau)
+    assert "étiquette visible" in panneau and "couloir" in panneau and "posé contre le bord" in panneau
+    assert "Emballage" in panneau
+    info_palette = page.inner_text("#contenu-palette")
+    assert "couloir de 14" in info_palette and "246" in info_palette
 
     # --- fiche palette et paramètres
     page.click("#btn-fiche")
     assert page.locator("#contenu-fiche .page-fiche").count() == 1
+    fiche = page.inner_text("#contenu-fiche")
+    assert "COULOIR GAUCHE" in fiche and "COULOIR DROITE" in fiche and "Renversable" not in fiche
+    page.evaluate("document.querySelector('#dlg-fiche').scrollTop = 0")
     capture("fiche_palette")
     page.click("#btn-fiche-fermer")
     page.click("#btn-parametres")
-    assert page.is_visible("[data-param=temps_limite_scip]") and page.is_visible("[data-param=iata_acces]")
+    assert page.is_visible("[data-param=temps_limite_scip]") and page.is_visible("[data-param=iata_au_bord]")
+    assert page.is_visible("[data-param=charge_max_carton]") and page.is_visible("[data-param=emballages_ecrasables]")
+    assert page.is_visible("[data-param=reduction_couloir]") and "246" in page.inner_text("#aide-largeur-utile")
     capture("parametres")
     page.click("#btn-params-annuler")
 
@@ -137,4 +150,29 @@ def test_parcours_complet(app):
     page.click("#btn-plan-csv")
     page.wait_for_selector("#info-export a")
     assert "plan.csv" in page.inner_text("#info-export")
+
+    # --- import d'un manifeste Excel : résumé, puis remplacement de la liste
+    page.set_input_files("#fichier-excel", str(Path(__file__).resolve().parent.parent / "data" / "exemple_cargo.xlsx"))
+    page.wait_for_selector("#dlg-import[open]")
+    resume = page.inner_text("#contenu-import")
+    assert "54" in resume and "14" in resume and "armes" in resume and "pièces de sécurité" in resume
+    assert "5725" in resume and "température est ignorée" in resume
+    capture("import_excel")
+    page.click("#btn-import-remplacer")
+    page.wait_for_function("window.palettiseur.etat.colis.length === 54")
+    colis = page.evaluate("window.palettiseur.etat.colis")
+    assert colis[0]["numero"] == "0836" and colis[0]["reference"].endswith("0836") and "renversable" not in colis[0]
+    assert sum(c["classe"] == "ARME" for c in colis) == 14 and sum(c["classe"] == "SECU" for c in colis) == 10
+    assert sum(c["emballage"] in ("carton", "fibre") for c in colis) == 28
+    page.evaluate("window.palettiseur.etat.parametres.duree_recherche = 3")
+    page.click("#btn-optimiser")
+    page.wait_for_function("window.palettiseur.etat.resultat && window.palettiseur.etat.resultat.palettes.some(p => p.placements.some(q => q.colis.numero === '0836'))", timeout=60000)
+    res = page.evaluate("({err: window.palettiseur.etat.resultat.verification.filter(m => m.niveau === 'erreur').length, non: window.palettiseur.etat.resultat.non_places.length})")
+    assert res == {"err": 0, "non": 0}
+    page.click(".onglet[data-palette='ensemble']")
+    capture("cargo_ensemble")
+    # chaque colis IATA est posé contre un bord et visible
+    iata = page.evaluate("""() => window.palettiseur.etat.resultat.palettes.flatMap(p => p.placements)
+        .filter(q => window.palettiseur.etat.classes[q.colis.classe]?.iata).map(q => [q.acces_iata.length, q.bord_iata.length])""")
+    assert len(iata) == 5 and all(a > 0 and b > 0 for a, b in iata)
     assert erreurs == []

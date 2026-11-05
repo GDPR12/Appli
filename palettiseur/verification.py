@@ -12,7 +12,8 @@ from dataclasses import dataclass, asdict
 from itertools import combinations
 
 from . import avion
-from .geometrie import cotes_visibles, orientations, se_chevauchent, supports, taux_support
+from .emballages import emballages
+from .geometrie import cotes_bord, cotes_visibles, en_contact, orientations, se_chevauchent, supports, taux_support
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
 from .modeles import Palette, Parametres, Resultat
 
@@ -45,7 +46,7 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
         if not any(abs(p.dx - o[0]) < 1e-6 and abs(p.dy - o[1]) < 1e-6 and abs(p.dz - o[2]) < 1e-6
                    for o in orientations(c)):
             msgs.append(Message("erreur", "orientation", f"Colis {c.numero} : orientation non autorisée "
-                                f"(colis à sens obligatoire).", n, [c.numero]))
+                                f"(la hauteur saisie doit rester verticale).", n, [c.numero]))
         # Dans le volume
         if p.x < -jeu or p.y < -jeu or p.z < -jeu or p.x2 > L + jeu or p.y2 > W + jeu or p.z2 > H + jeu:
             msgs.append(Message("erreur", "volume", f"Colis {c.numero} dépasse du volume de la palette {n}.",
@@ -55,7 +56,7 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
         if ts < params.support_minimal - 1e-6:
             msgs.append(Message("erreur", "support", f"Colis {c.numero} : seulement {ts:.0%} de sa base est "
                                 f"soutenue (minimum {params.support_minimal:.0%}).", n, [c.numero]))
-        # Masse et fragilité des supports
+        # Charge admissible des porteurs : lourd sur léger, fragile, carton
         for q, _ in supports(p, pls):
             if c.masse > params.facteur_masse * q.colis.masse + 1e-6:
                 msgs.append(Message("erreur", "lourd_sur_leger", f"Colis {c.numero} ({c.masse:g} kg) est posé "
@@ -64,10 +65,24 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
             if q.colis.fragile:
                 msgs.append(Message("erreur", "fragile", f"Colis {c.numero} est posé sur le colis fragile "
                                     f"{q.colis.numero}.", n, [c.numero, q.colis.numero]))
-        # Colis IATA : visible depuis au moins un côté (règle de CDP_2)
-        if params.iata_acces and classe_de(c.classe).iata and not cotes_visibles(p, pls):
-            msgs.append(Message("erreur", "iata_acces", f"Colis {c.numero} (étiquette {c.classe}) est masqué des deux côtés "
-                                "par d'autres colis : étiquette non visible.", n, [c.numero]))
+            elif params.emballage_ecrasable(q.colis.emballage) and c.masse > params.charge_max_carton + 1e-6:
+                msgs.append(Message("erreur", "carton", f"Colis {c.numero} ({c.masse:g} kg) est posé sur le colis "
+                                    f"{q.colis.numero} ({emballages().libelle(q.colis.emballage)}), qui ne doit pas être "
+                                    f"écrasé (charge maximale {params.charge_max_carton:g} kg).",
+                                    n, [c.numero, q.colis.numero]))
+        # Colis IATA : posé contre un bord du couloir et visible depuis ce côté (règle de CDP_3 sur l'axe du couloir)
+        if classe_de(c.classe).iata:
+            visibles = cotes_visibles(p, pls)
+            if not visibles:
+                msgs.append(Message("erreur", "iata_acces", f"Colis {c.numero} (étiquette {c.classe}) est masqué des "
+                                    "deux côtés du couloir par d'autres colis : étiquette non visible.", n, [c.numero]))
+            elif params.iata_au_bord and not any(cote in visibles for cote in cotes_bord(p, L, jeu)):
+                msgs.append(Message("erreur", "iata_bord", f"Colis {c.numero} (étiquette {c.classe}) n'est pas posé "
+                                    "contre un bord du couloir : étiquette non accessible.", n, [c.numero]))
+        # Colis isolé : aucun contact avec les autres colis (le projet l'interdit)
+        if len(pls) > 1 and not any(en_contact(p, q, jeu) for q in pls if q is not p):
+            msgs.append(Message("avertissement", "isole", f"Colis {c.numero} isolé : il ne touche aucun autre colis "
+                                f"de la palette {n}.", n, [c.numero]))
         # Fragile au sommet (sangles)
         if c.fragile and abs(p.z2 - pal.hauteur) <= jeu and len(pls) > 1:
             msgs.append(Message("avertissement", "fragile_sommet", f"Colis fragile {c.numero} au sommet de la "
