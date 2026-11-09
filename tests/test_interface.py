@@ -152,7 +152,7 @@ def test_parcours_complet(app):
     assert "plan.csv" in page.inner_text("#info-export")
 
     # --- import d'un manifeste Excel : résumé, puis remplacement de la liste
-    page.set_input_files("#fichier-excel", str(Path(__file__).resolve().parent.parent / "data" / "exemple_cargo.xlsx"))
+    page.set_input_files("#fichier-import", str(Path(__file__).resolve().parent.parent / "data" / "exemple_cargo.xlsx"))   # un seul bouton : format reconnu
     page.wait_for_selector("#dlg-import[open]")
     resume = page.inner_text("#contenu-import")
     assert "54" in resume and "14" in resume and "armes" in resume and "pièces de sécurité" in resume
@@ -176,3 +176,37 @@ def test_parcours_complet(app):
         .filter(q => window.palettiseur.etat.classes[q.colis.classe]?.iata).map(q => [q.acces_iata.length, q.bord_iata.length])""")
     assert len(iata) == 5 and all(a > 0 and b > 0 for a, b in iata)
     assert erreurs == []
+
+
+def test_import_unifie_reconnait_le_format(app, tmp_path):
+    """Un seul bouton « Importer… » : le .xlsx n'est plus lu comme du texte, un CSV Excel en Windows-1252 garde ses accents."""
+    page, serveur = app
+    page.on("dialog", lambda d: d.accept())
+    page.goto(serveur.url)
+    page.wait_for_function("window.palettiseur && window.palettiseur.etat.config")
+    assert page.locator("#btn-importer-excel").count() == 0 and page.locator("#fichier-excel").count() == 0
+    page.evaluate("window.palettiseur.etat.colis = []")
+    exemple = Path(__file__).resolve().parent.parent / "data" / "exemple_cargo.xlsx"
+
+    # .xlsx dont l'extension a été changée : reconnu au contenu (signature « PK »), pas lu comme du texte
+    copie = tmp_path / "manifeste.dat"
+    copie.write_bytes(exemple.read_bytes())
+    page.set_input_files("#fichier-import", str(copie))
+    page.wait_for_selector("#dlg-import[open]")
+    assert "54" in page.inner_text("#contenu-import")
+    page.click("#btn-import-annuler")
+
+    # CSV enregistré par Excel en français (Windows-1252, séparateur point-virgule)
+    csv = tmp_path / "liste.csv"
+    csv.write_bytes("numero;longueur;largeur;hauteur;masse;classe;emballage;commentaire\nA-1;80;60;50;12;;carton;Caisse à café\n".encode("cp1252"))
+    page.set_input_files("#fichier-import", str(csv))
+    page.wait_for_function("window.palettiseur.etat.colis.length === 1")
+    c = page.evaluate("window.palettiseur.etat.colis[0]")
+    assert c["numero"] == "A-1" and c["emballage"] == "carton" and c["commentaire"] == "Caisse à café"
+
+    # ancien format .xls : message clair, aucune erreur technique
+    xls = tmp_path / "ancien.xls"
+    xls.write_bytes(bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 64)
+    page.set_input_files("#fichier-import", str(xls))
+    page.wait_for_selector("#notification:not([hidden])")
+    assert "Enregistrer sous" in page.inner_text("#notification") and "xlsx" in page.inner_text("#notification")

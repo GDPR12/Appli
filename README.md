@@ -31,7 +31,7 @@ l'avion) sur 274 cm de large**, avec **14 cm de couloir de chaque côté de la l
 | Demande | Réalisation |
 |---|---|
 | Saisie simple d'un colis | Formulaire : numéro, longueur / largeur / hauteur (cm), masse (kg), menu déroulant **Colis spécial** (classes IATA : explosifs, carburant, gaz, comburants, corrosifs, radioactifs… + armement), **matière d'emballage**, case **Fragile**, commentaire libre (vide par défaut), quantité. Plus de case « renversable » : un colis garde toujours sa hauteur à la verticale. |
-| Import d'un manifeste Excel | Bouton **Importer Excel…** : lit un fichier `.xlsx` au format `CARGO.xlsx` (voir [Import Excel](#import-dun-manifeste-excel)) : armes et pièces de sécurité reconnues dans la désignation, numéro = 4 derniers chiffres de la dernière colonne, matière d'emballage lue, température ignorée. |
+| Import d'un manifeste Excel | Bouton **Importer…** (un seul pour tous les formats, reconnus à l'extension puis au contenu) : lit un fichier `.xlsx` au format `CARGO.xlsx` (voir [Import Excel](#import-dun-manifeste-excel)) : armes et pièces de sécurité reconnues dans la désignation, numéro = 4 derniers chiffres de la dernière colonne, matière d'emballage lue, température ignorée. |
 | Import des listes MEAT / SILRIA | Import CSV (séparateur `;` `,` ou tabulation, noms de colonnes reconnus automatiquement) et JSON ; export CSV de la liste. |
 | Répartition des colis | Pipeline en cinq phases du notebook CDP_3 : minimise les emplacements, abaisse les colis par tassement vertical, puis recentre. Fonctionne **sans solveur** (heuristique, quelques secondes) ou **avec SCIP** (moteur exact facultatif, amorcé par l'heuristique). |
 | Colis lourd jamais sur colis léger | Contrainte dure dans toutes les phases : un colis ne repose que sur des colis au moins aussi lourds que lui (facteur paramétrable). |
@@ -78,7 +78,7 @@ Double-cliquer sur **`build_windows.bat`** (ou `python -m PyInstaller PaletteA40
 
 ## Utilisation
 
-1. **Saisir les colis** dans le formulaire de gauche (ou *Exemples…*, ou *Importer Excel…* un manifeste, ou *Importer CSV/JSON…*). La liste est conservée automatiquement d'une session à l'autre.
+1. **Saisir les colis** dans le formulaire de gauche (ou *Exemples…*, ou *Importer…* un manifeste Excel `.xlsx`, un CSV ou un projet JSON : le format est reconnu automatiquement). La liste est conservée automatiquement d'une session à l'autre.
 2. **Paramètres** (⚙) : nombre de passagers, dimensions de la palette (224 × 274 cm), espace de couloir par côté (14 cm), dérogation sans couloir, hauteur maximale, masses limites, règles (support minimal, facteur masse, colis IATA sur le bord, matières à ne pas écraser et charge tolérée dessus), moteur, budget de l'heuristique, temps SCIP par étape.
 3. **Confectionner les palettes** : le plan apparaît en 3D. Onglets : vue d'ensemble / palette par palette. Boutons de mode : *Catégories*, *Carte spéciaux*, *Carte tous*, *Heat map poids*. Barre **Étape du calcul** : *Phase 1 – placement heuristique*, *Phase 2 – après SCIP* (moteur SCIP), *Solution finale*.
 4. **Cliquer sur un colis** (dans la vue 3D, dans la liste ou dans un message de vérification) pour ses détails.
@@ -122,7 +122,7 @@ Une fenêtre de résumé s'affiche avant l'import (colis lus, armes, pièces de 
 
 ![Import d'un manifeste Excel](docs/captures/import_excel.png)
 
-Le lecteur `.xlsx` n'a besoin d'aucune bibliothèque : il ouvre l'archive et lit le XML avec la bibliothèque standard (taille limitée, entités XML refusées). Les formats `.xls` et `.csv` d'Excel ne sont pas lus : enregistrez le fichier en `.xlsx`. Attention aux numéros de série de 18 chiffres : si Excel les a enregistrés comme des nombres, leurs derniers chiffres peuvent déjà être arrondis dans le fichier ; l'application le signale, enregistrez alors la colonne au format texte.
+Le lecteur `.xlsx` n'a besoin d'aucune bibliothèque : il ouvre l'archive et lit le XML avec la bibliothèque standard (taille limitée, entités XML refusées). L'ancien format `.xls` n'est pas lu (message explicite) : enregistrez le fichier en `.xlsx`. Un fichier ouvert dans Excel peut être refusé par le navigateur : fermez-le ou importez une copie. Attention aux numéros de série de 18 chiffres : si Excel les a enregistrés comme des nombres, leurs derniers chiffres peuvent déjà être arrondis dans le fichier ; l'application le signale, enregistrez alors la colonne au format texte.
 
 ## Emballages et cartons
 

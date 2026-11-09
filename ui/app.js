@@ -551,19 +551,45 @@ function afficherMessages() {
 }
 
 // ---------------------------------------------------------------- import / export
+function lireOctets(fichier) {
+  // FileReader plutôt que Blob.arrayBuffer() : fonctionne dans tous les navigateurs et fenêtres intégrées.
+  return new Promise((resolve, reject) => {
+    const lecteur = new FileReader();
+    lecteur.onload = () => resolve(lecteur.result);
+    lecteur.onerror = () => reject(new Error(`le fichier « ${fichier.name} » n'a pas pu être lu`
+      + ' (est-il ouvert dans Excel ? fermez-le ou faites-en une copie, puis réessayez)'));
+    lecteur.readAsArrayBuffer(fichier);
+  });
+}
+function decoderTexte(octets) {
+  // CSV enregistrés par Excel en français : souvent en Windows-1252, pas en UTF-8.
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(octets); } catch (e) { return new TextDecoder('windows-1252').decode(octets); }
+}
+/** Point d'entrée unique : le format (Excel, CSV, JSON) est reconnu à l'extension puis au contenu. */
 async function importerFichier(fichier) {
-  const texte = await fichier.text();
   try {
-    const rep = await api('/api/importer', { texte });
-    if (!rep.colis.length) { notifier('Aucun colis lisible dans ce fichier. ' + (rep.avertissements[0] || ''), true); return; }
-    const remplacer = etat.colis.length === 0 || confirm(`Remplacer les ${etat.colis.length} colis actuels par les ${rep.colis.length} colis importés ?\n(Annuler = les ajouter à la suite)`);
-    const existants = new Set(remplacer ? [] : etat.colis.map((c) => c.numero));
-    const nouveaux = rep.colis.map((c) => ({ ...c, quantite: 1 })).filter((c) => !existants.has(c.numero));
-    etat.colis = remplacer ? nouveaux : etat.colis.concat(nouveaux);
-    if (rep.parametres) etat.parametres = { ...etat.parametres, ...rep.parametres };
-    sauvegarderLocal(); afficherListe();
-    notifier(`${nouveaux.length} colis importés depuis ${fichier.name}` + (rep.avertissements.length ? ` (${rep.avertissements.length} ligne(s) ignorée(s))` : ''));
+    const octets = await lireOctets(fichier);
+    const entete = new Uint8Array(octets.slice(0, 4));
+    const estZip = entete[0] === 0x50 && entete[1] === 0x4b;                                  // « PK » : classeur .xlsx
+    const estOle = entete[0] === 0xd0 && entete[1] === 0xcf && entete[2] === 0x11 && entete[3] === 0xe0;   // ancien .xls
+    if (estOle || /\.(xls|ods|numbers)$/i.test(fichier.name)) {
+      notifier(`« ${fichier.name} » n'est pas au format .xlsx. Dans Excel : Fichier > Enregistrer sous > Classeur Excel (*.xlsx), puis réimportez-le.`, true);
+      return;
+    }
+    if (estZip || /\.(xlsx|xlsm)$/i.test(fichier.name)) await importerExcel(fichier, octets);
+    else await importerTexte(fichier, decoderTexte(octets));
   } catch (e) { notifier('Import impossible : ' + e.message, true); }
+}
+async function importerTexte(fichier, texte) {
+  const rep = await api('/api/importer', { texte });
+  if (!rep.colis.length) { notifier('Aucun colis lisible dans ce fichier. ' + (rep.avertissements[0] || ''), true); return; }
+  const remplacer = etat.colis.length === 0 || confirm(`Remplacer les ${etat.colis.length} colis actuels par les ${rep.colis.length} colis importés ?\n(Annuler = les ajouter à la suite)`);
+  const existants = new Set(remplacer ? [] : etat.colis.map((c) => c.numero));
+  const nouveaux = rep.colis.map((c) => ({ ...c, quantite: 1 })).filter((c) => !existants.has(c.numero));
+  etat.colis = remplacer ? nouveaux : etat.colis.concat(nouveaux);
+  if (rep.parametres) etat.parametres = { ...etat.parametres, ...rep.parametres };
+  sauvegarderLocal(); afficherListe();
+  notifier(`${nouveaux.length} colis importés depuis ${fichier.name}` + (rep.avertissements.length ? ` (${rep.avertissements.length} ligne(s) ignorée(s))` : ''));
 }
 function versBase64(tampon) {
   const octets = new Uint8Array(tampon);
@@ -572,9 +598,10 @@ function versBase64(tampon) {
   return btoa(bin);
 }
 let importEnAttente = null;   // {nom, colis} en attente de confirmation dans la boîte de dialogue
-async function importerExcel(fichier) {
+async function importerExcel(fichier, octets) {
   try {
-    const rep = await api('/api/importer_cargo', { nom: fichier.name, contenu: versBase64(await fichier.arrayBuffer()) });
+    const nom = /\.(xlsx|xlsm)$/i.test(fichier.name) ? fichier.name : `${fichier.name}.xlsx`;   // reconnu au contenu : on le dit au serveur
+    const rep = await api('/api/importer_cargo', { nom, contenu: versBase64(octets) });
     if (!rep.colis.length) { notifier('Aucun colis lisible dans ce fichier. ' + (rep.avertissements[0] || ''), true); return; }
     importEnAttente = { nom: fichier.name, colis: rep.colis.map((c) => ({ ...c, quantite: 1 })) };
     const r = rep.resume;
@@ -745,8 +772,6 @@ async function initialiser() {
     notifier(`${rep.titre} : ${rep.colis.length} ligne(s) chargée(s)` + (rep.parametres ? ' avec les paramètres du notebook' : '')
       + ((rep.avertissements || []).length ? ` — ${rep.avertissements[0]}` : '') + '. Cliquez sur « Confectionner les palettes ».');
   });
-  $('#btn-importer-excel').addEventListener('click', () => $('#fichier-excel').click());
-  $('#fichier-excel').addEventListener('change', (e) => { if (e.target.files[0]) importerExcel(e.target.files[0]); e.target.value = ''; });
   $('#btn-import-remplacer').addEventListener('click', () => validerImportExcel(true));
   $('#btn-import-ajouter').addEventListener('click', () => validerImportExcel(false));
   $('#btn-import-annuler').addEventListener('click', () => { importEnAttente = null; $('#dlg-import').close(); });

@@ -19,10 +19,8 @@
   </div>
   <div class="actions">
     <select id="sel-exemple" class="secondaire" title="Charger un jeu de colis d'exemple"><option value="">Exemples…</option></select>
-    <button id="btn-importer-excel" class="secondaire" title="Importer un manifeste de fret au format Excel (CARGO.xlsx)">Importer Excel…</button>
-    <input type="file" id="fichier-excel" accept=".xlsx,.xlsm" hidden>
-    <button id="btn-importer" class="secondaire" title="Importer une liste de colis (CSV MEAT/SILRIA ou projet JSON)">Importer CSV/JSON…</button>
-    <input type="file" id="fichier-import" accept=".csv,.txt,.json" hidden>
+    <button id="btn-importer" class="secondaire" title="Importer un manifeste Excel (.xlsx, format CARGO), une liste CSV (MEAT/SILRIA) ou un projet JSON : le format est reconnu automatiquement">Importer…</button>
+    <input type="file" id="fichier-import" accept=".xlsx,.xlsm,.csv,.txt,.json" hidden>
     <button id="btn-enregistrer" class="secondaire" title="Enregistrer la liste de colis et les paramètres (JSON)">Enregistrer</button>
     <button id="btn-parametres" class="secondaire" title="Paramètres de l'avion, des palettes et des règles">⚙ Paramètres</button>
     <button id="btn-optimiser" class="primaire" title="Calculer la répartition des colis sur les palettes">▶ Confectionner les palettes</button>
@@ -90,7 +88,7 @@
           </thead>
           <tbody></tbody>
         </table>
-        <p class="vide" id="liste-vide">Aucun colis. Ajoutez des colis avec le formulaire, importez un manifeste Excel ou un fichier CSV, ou chargez un exemple.</p>
+        <p class="vide" id="liste-vide">Aucun colis. Ajoutez des colis avec le formulaire, utilisez « Importer… » (manifeste Excel, CSV ou projet JSON) ou chargez un exemple.</p>
       </div>
       <p class="aide">Masse totale : <strong id="masse-totale">0 kg</strong> · Volume : <strong id="volume-total">0 m³</strong></p>
     </section>

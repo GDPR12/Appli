@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import binascii
 import json
 
@@ -131,9 +132,15 @@ def lancer_optimisation(liste_colis: list[dict], parametres: dict | None) -> dic
 def importer_texte(texte: str) -> dict:
     """Importe une liste de colis depuis un CSV ou un JSON (projet enregistré)."""
     texte_strip = texte.strip()
+    if texte_strip.startswith("PK") or "\x00" in texte[:2000]:
+        raise ValueError("ce fichier est binaire (classeur Excel ?) : enregistrez-le au format .xlsx "
+                         "et utilisez « Importer… », qui lit les .xlsx, les .csv et les projets .json")
     if texte_strip.startswith("{") or texte_strip.startswith("["):
         import json
-        data = json.loads(texte_strip)
+        try:
+            data = json.loads(texte_strip)
+        except ValueError:
+            raise ValueError("fichier JSON invalide : ce n'est pas un projet enregistré par l'application") from None
         if isinstance(data, dict):
             liste = data.get("colis", [])
             parametres = data.get("parametres")
@@ -149,7 +156,10 @@ def importer_texte(texte: str) -> dict:
             else:
                 valides.append(c)
         return {"colis": [c.vers_dict() for c in valides], "avertissements": avert, "parametres": parametres}
-    colis, avert = fichiers.lire_csv(texte)
+    try:
+        colis, avert = fichiers.lire_csv(texte)
+    except csv.Error:
+        raise ValueError("fichier illisible : ce n'est ni un CSV ni un projet JSON valide") from None
     return {"colis": [c.vers_dict() for c in colis], "avertissements": avert, "parametres": None}
 
 

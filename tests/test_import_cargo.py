@@ -203,3 +203,14 @@ def test_table_des_emballages():
     assert e.code_depuis_texte("inconnu") == ""
     assert e.ecrasable("carton") and e.ecrasable("fibre") and not e.ecrasable("bois") and not e.ecrasable("")
     assert sorted(e.codes_ecrasables()) == ["carton", "fibre"]
+
+
+def test_un_classeur_envoye_a_l_import_texte_donne_un_message_clair():
+    """Le .xlsx envoyé par erreur à l'import CSV/JSON ne doit plus produire « new-line character seen in unquoted field »."""
+    brut = chemin_donnees("exemple_cargo.xlsx").read_bytes().decode("latin-1")
+    with pytest.raises(ValueError, match="binaire"):
+        api.importer_texte(brut)
+    with pytest.raises(ValueError, match="JSON invalide"):
+        api.importer_texte("{pas du json")
+    with pytest.raises(ValueError, match="illisible"):
+        api.importer_texte("a;b\rc;d\n")        # retour chariot isolé au milieu d'une ligne
