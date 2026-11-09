@@ -94,42 +94,51 @@ def test_capacite_masse_palette():
     assert erreurs(r) == []
 
 
-def test_colis_iata_visibles_et_sur_le_bord_a_chaque_etape():
-    """Règle de CDP_3 sur l'axe du couloir : chaque colis dangereux est visible depuis un côté ET posé contre ce bord."""
+@pytest.mark.parametrize("axe", ["y", "x"])
+def test_colis_iata_visibles_et_sur_le_bord_a_chaque_etape(axe):
+    """Règle du notebook sur l'axe des côtés (y par défaut) : chaque colis dangereux est visible depuis un côté ET posé
+    contre ce bord, à chaque étape du calcul."""
     from palettiseur.geometrie import cotes_bord, cotes_visibles
     from palettiseur.iata import classe as classe_de
     colis = [Colis(f"d{i}", 40, 40, 40, 30, classe=c) for i, c in enumerate(["3", "3", "9", "2.2", "8"])]
     colis += [Colis(f"o{i}", 50, 40, 40, 30) for i in range(30)]
-    params = Parametres(duree_recherche=0.8)
-    assert params.largeur_utile == 246
+    params = Parametres(duree_recherche=0.8, axe_cotes=axe)
     r = optimiser(colis, params)
     for etape in r.etapes:
         for pal in etape.palettes:
+            assert pal.type.axe_cotes == axe
             for p in pal.placements:
                 if classe_de(p.colis.classe).iata:
-                    visibles = cotes_visibles(p, pal.placements)
-                    bords = cotes_bord(p, pal.type.largeur, params.jeu_contact)
+                    visibles = cotes_visibles(p, pal.placements, axe)
+                    bords = cotes_bord(p, pal.type.etendue_cotes, params.jeu_contact, axe)
                     assert set(visibles) & set(bords), (etape.cle, p.colis.numero, visibles, bords)
     assert erreurs(r) == []
 
 
-def test_aucun_colis_ne_deborde_dans_le_couloir():
-    """Largeur 274 cm moins 14 cm de couloir de chaque côté : tous les colis tiennent dans les 246 cm utiles."""
-    r = optimiser(colis_aleatoires(40, 5), Parametres(duree_recherche=0.8, graine=5))
-    assert r.parametres.largeur_utile == 246
+@pytest.mark.parametrize("axe,largeur,longueur", [("y", 274, 196), ("x", 246, 224)])
+def test_aucun_colis_ne_deborde_dans_le_couloir(axe, largeur, longueur):
+    """Le couloir de 14 cm de chaque côté réduit l'axe des côtés (y : 224 -> 196 cm, x : 274 -> 246 cm)."""
+    r = optimiser(colis_aleatoires(40, 5), Parametres(duree_recherche=0.8, graine=5, axe_cotes=axe))
     for pal in r.palettes:
-        assert pal.type.largeur == 246 and pal.type.longueur in (224, 448, 672)
+        assert pal.type.largeur == largeur and pal.type.longueur == longueur * pal.type.positions - (
+            28 * (pal.type.positions - 1) if axe == "y" else 0)
         for p in pal.placements:
-            assert p.x >= -1e-6 and p.x2 <= 246 + 1e-6 and p.y >= -1e-6 and p.y2 <= pal.type.longueur + 1e-6
+            assert p.x >= -1e-6 and p.x2 <= pal.type.largeur + 1e-6 and p.y >= -1e-6 and p.y2 <= pal.type.longueur + 1e-6
 
 
-def test_derogation_couloir_utilise_toute_la_largeur():
-    """270 cm de large passent sur les 274 cm du plateau, mais pas sur les 246 cm utiles : il faut alors un BIPAL."""
-    r = optimiser([Colis("large", 270, 100, 50, 100)], Parametres(duree_recherche=0.3, derogation_couloir=True))
-    assert r.palettes[0].type.largeur == 274 and r.palettes[0].type.code == "10K" and not r.non_places
-    r = optimiser([Colis("large", 270, 100, 50, 100)], Parametres(duree_recherche=0.3))
+def test_derogation_couloir_utilise_toute_la_zone():
+    """215 x 215 cm tient sur les 224 cm du plateau mais pas sur les 196 cm utiles (axe y) : il faut alors une BIPAL."""
+    lot = [Colis("large", 215, 215, 50, 100)]
+    r = optimiser(lot, Parametres(duree_recherche=0.3, derogation_couloir=True))
+    assert r.palettes[0].type.code == "10K" and r.palettes[0].type.longueur == 224 and not r.non_places
+    r = optimiser(lot, Parametres(duree_recherche=0.3))
     assert not r.non_places and r.palettes[0].type.code == "BIPAL"
-    assert all(p.dx <= 246 for pal in r.palettes for p in pal.placements)
+    # même chose sur x : 250 x 100 passe sur 274 cm, pas sur 246 cm
+    lot = [Colis("large", 250, 100, 50, 100)]
+    r = optimiser(lot, Parametres(duree_recherche=0.3, axe_cotes="x", derogation_couloir=True))
+    assert r.palettes[0].type.code == "10K"
+    r = optimiser(lot, Parametres(duree_recherche=0.3, axe_cotes="x"))
+    assert r.palettes[0].type.code == "BIPAL"
 
 
 def test_rien_de_lourd_sur_un_carton():
@@ -189,7 +198,7 @@ def test_fragile_rien_dessus():
 
 
 def test_rampe_apres_soute():
-    colis = [Colis(f"b{i}", 200, 200, 100, 2500) for i in range(9)]  # une palette par colis (2,5 t < 3 t brut)
+    colis = [Colis(f"b{i}", 190, 190, 100, 2500) for i in range(9)]  # une palette par colis (2,5 t < 3 t brut)
     r = optimiser(colis, Parametres(duree_recherche=0.5, autoriser_bipal=False, autoriser_tripal=False))
     zones = [p.zone for p in r.palettes]
     assert zones.count("rampe") == 2 and zones[:7] == ["soute"] * 7

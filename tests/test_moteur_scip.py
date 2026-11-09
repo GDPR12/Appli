@@ -26,8 +26,8 @@ def test_pipeline_scip_valide_l_amorce_et_respecte_les_regles():
     for pal in res.palettes:
         for p in pal.placements:
             assert p.dz == p.colis.hauteur            # la hauteur reste verticale
-            if p.colis.classe:                        # IATA : visible depuis un côté du couloir et posé contre ce bord
-                assert set(cotes_visibles(p, pal.placements)) & set(cotes_bord(p, pal.type.largeur, 0.5))
+            if p.colis.classe:                        # IATA : visible depuis un côté et posé contre ce bord (axe y)
+                assert set(cotes_visibles(p, pal.placements, "y")) & set(cotes_bord(p, pal.type.etendue_cotes, 0.5, "y"))
 
 
 def test_scip_reduit_le_nombre_d_emplacements_quand_l_heuristique_en_utilise_trop():
@@ -59,12 +59,18 @@ def _chargement(p, *boites):
     return ch
 
 
-def test_le_modele_expose_les_variables_d_acces_iata():
+def poser(axe, colis_, s, t, z, ds, dt, dz):
+    """(colis, x, y, z, dx, dy, dz) dont ``s`` / ``ds`` sont sur l'axe des côtés et ``t`` / ``dt`` sur l'autre axe."""
+    return (colis_, s, t, z, ds, dt, dz) if axe == "x" else (colis_, t, s, z, dt, ds, dz)
+
+
+@pytest.mark.parametrize("axe", ["x", "y"])
+def test_le_modele_expose_les_variables_d_acces_iata(axe):
     from palettiseur.iata import regles
-    p = Parametres(derogation_couloir=True)
-    ch = _chargement(p, (Colis("D", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50),
-                     (Colis("O", 50, 50, 50, 10), 100, 0, 0, 50, 50, 50),
-                     (Colis("E", 50, 50, 50, 10, classe="8"), 0, 100, 0, 50, 50, 50))
+    p = Parametres(derogation_couloir=True, axe_cotes=axe)
+    ch = _chargement(p, poser(axe, Colis("D", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50),
+                     poser(axe, Colis("O", 50, 50, 50, 10), 100, 0, 0, 50, 50, 50),
+                     poser(axe, Colis("E", 50, 50, 50, 10, classe="8"), 0, 100, 0, 50, 50, 50))
     liste, _ = moteur_scip._indices_colis([ch])
     c = moteur_scip._construire_modele([ch], liste, p, regles(), 5)
     assert sorted(c["acces_gauche"]) == [0, 2] and sorted(c["acces_droite"]) == [0, 2]      # D et E sont dangereux
@@ -82,31 +88,36 @@ def _statut_avec_placement_fixe(p, boites):
     return str(c["modele"].getStatus())
 
 
-def test_scip_refuse_un_colis_dangereux_masque_des_deux_cotes():
-    """Le couloir est sur les côtés (axe x) : un colis à gauche et un autre à droite masquent l'étiquette."""
-    p = Parametres(derogation_couloir=True, iata_au_bord=False)
-    dangereux = (Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50)
-    gauche = (Colis("P", 100, 30, 50, 10), 0, 10, 0, 100, 30, 50)            # x 0-100 : masque le côté gauche
-    droite = (Colis("Q", 96, 30, 50, 10), 150, 10, 0, 96, 30, 50)            # x 150-246 : masque le côté droit
-    assert _statut_avec_placement_fixe(p, [dangereux, gauche, droite]) == "infeasible"
-    assert _statut_avec_placement_fixe(p, [dangereux, gauche]) == "optimal"   # reste visible côté droit
+@pytest.mark.parametrize("axe", ["x", "y"])
+def test_scip_refuse_un_colis_dangereux_masque_des_deux_cotes(axe):
+    """Les côtés sont les extrémités de l'axe choisi : un colis avant et un autre après masquent l'étiquette."""
+    p = Parametres(derogation_couloir=True, iata_au_bord=False, axe_cotes=axe)
+    dangereux = poser(axe, Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50)
+    avant = poser(axe, Colis("P", 100, 30, 50, 10), 0, 10, 0, 100, 30, 50)            # 0-100 : masque le côté gauche
+    apres = poser(axe, Colis("Q", 96, 30, 50, 10), 150, 10, 0, 96, 30, 50)            # 150-246 : masque le côté droit
+    assert _statut_avec_placement_fixe(p, [dangereux, avant, apres]) == "infeasible"
+    assert _statut_avec_placement_fixe(p, [dangereux, avant]) == "optimal"            # reste visible de l'autre côté
 
 
-def test_scip_accepte_deux_colis_dangereux_cote_a_cote():
-    """Côte à côte en y, ils ne se masquent pas : la contrainte ne doit pas être trop stricte."""
-    p = Parametres(derogation_couloir=True)
-    a = (Colis("A", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50)
-    b = (Colis("B", 50, 50, 50, 10, classe="8"), 0, 50, 0, 50, 50, 50)
+@pytest.mark.parametrize("axe", ["x", "y"])
+def test_scip_accepte_deux_colis_dangereux_cote_a_cote(axe):
+    """Côte à côte sur l'autre axe, ils ne se masquent pas : la contrainte ne doit pas être trop stricte."""
+    p = Parametres(derogation_couloir=True, axe_cotes=axe)
+    a = poser(axe, Colis("A", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50)
+    b = poser(axe, Colis("B", 50, 50, 50, 10, classe="8"), 0, 50, 0, 50, 50, 50)
     assert _statut_avec_placement_fixe(p, [a, b]) == "optimal"
 
 
-def test_scip_impose_le_colis_dangereux_contre_un_bord():
-    p = Parametres(derogation_couloir=True)                                    # largeur utile 274 cm
-    milieu = (Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50)
+@pytest.mark.parametrize("axe", ["x", "y"])
+def test_scip_impose_le_colis_dangereux_contre_un_bord(axe):
+    p = Parametres(derogation_couloir=True, axe_cotes=axe)
+    fin = p.types_palettes()[0].etendue_cotes - 50
+    milieu = poser(axe, Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50)
     assert _statut_avec_placement_fixe(p, [milieu]) == "infeasible"
-    assert _statut_avec_placement_fixe(Parametres(derogation_couloir=True, iata_au_bord=False), [milieu]) == "optimal"
-    gauche = (Colis("M", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50)
-    droite = (Colis("M", 50, 50, 50, 10, classe="3"), 224, 0, 0, 50, 50, 50)
+    assert _statut_avec_placement_fixe(Parametres(derogation_couloir=True, iata_au_bord=False, axe_cotes=axe),
+                                       [milieu]) == "optimal"
+    gauche = poser(axe, Colis("M", 50, 50, 50, 10, classe="3"), 0, 0, 0, 50, 50, 50)
+    droite = poser(axe, Colis("M", 50, 50, 50, 10, classe="3"), fin, 0, 0, 50, 50, 50)
     assert _statut_avec_placement_fixe(p, [gauche]) == "optimal"
     assert _statut_avec_placement_fixe(p, [droite]) == "optimal"
 
@@ -119,3 +130,11 @@ def test_scip_n_ecrase_pas_un_carton():
     assert _statut_avec_placement_fixe(Parametres(derogation_couloir=True, charge_max_carton=20), [carton, dessus]) == "optimal"
     bois = (Colis("K", 100, 100, 50, 200, emballage="bois"), 0, 0, 0, 100, 100, 50)
     assert _statut_avec_placement_fixe(p, [bois, dessus]) == "optimal"
+
+
+def test_pipeline_scip_en_mode_notebook():
+    """SCIP s'intercale entre la phase 1 du notebook et sa fusion : les positions passent dans les deux sens."""
+    res = optimiser(petite_liste(), Parametres(duree_recherche=1.0, temps_limite_scip=15, moteur="scip", mode_notebook=True))
+    assert res.moteur == "scip" and not res.non_places and len(res.palettes) == 2
+    assert [m for m in verifier(res) if m.niveau == "erreur"] == []
+    assert "VALIDÉE" in res.journal[1]["texte"] and "ordre 1" in res.journal[0]["texte"]

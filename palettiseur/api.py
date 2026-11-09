@@ -51,7 +51,8 @@ EXEMPLES = [
      "description": "Le manifeste CARGO.xlsx importé : numéros de série, 14 armes, 10 pièces de sécurité, 5 matières "
                     "dangereuses (classes 9, 3 et 2.2), emballages (28 cartons)."},
     {"cle": "cdp", "titre": "CDP – 54 colis du notebook",
-     "description": "Les 54 colis du notebook CDP_3 (numérotés 1 à 54, sans emballage ni armes) : 5 colis dangereux, hauteur 2,54 m."},
+     "description": "Les 54 colis du notebook CDP_4 (numérotés 1 à 54) avec ses paramètres et son code : 2 palettes de 218 et 141 cm "
+                    "attendues, comme dans le notebook (environ 40 s de calcul)."},
     {"cle": "iata", "titre": "Mixte – matières dangereuses, armement et BIPAL",
      "description": "Liste variée : classes IATA incompatibles, armement, fragiles, cartons et un colis de 3 m."},
 ]
@@ -76,12 +77,13 @@ def colis_depuis_liste(liste: list[dict]) -> list[Colis]:
 def _palettes_dict(palettes, params: Parametres) -> list[dict]:
     res = []
     for pal in palettes:
-        d = pal.vers_dict(params.tare_palette, params.largeur_palette)
+        d = pal.vers_dict(params.tare_palette, params.largeur_palette, params.longueur_palette * pal.type.positions)
         for placement, dict_placement in zip(pal.placements, d["placements"]):
             if classe_de(placement.colis.classe).iata:
-                # côtés du couloir d'où l'étiquette est visible, et bord contre lequel le colis est posé
-                dict_placement["acces_iata"] = list(cotes_visibles(placement, pal.placements))
-                dict_placement["bord_iata"] = list(cotes_bord(placement, pal.type.largeur, params.jeu_contact))
+                # côtés d'où l'étiquette est visible, et bord contre lequel le colis est posé (sur l'axe des côtés)
+                axe = pal.type.axe_cotes
+                dict_placement["acces_iata"] = list(cotes_visibles(placement, pal.placements, axe))
+                dict_placement["bord_iata"] = list(cotes_bord(placement, pal.type.etendue_cotes, params.jeu_contact, axe))
         d["carte_tous"] = coloriage_carte(pal, params.jeu_contact, False)
         d["carte_speciaux"] = coloriage_carte(pal, params.jeu_contact, True)
         res.append(d)

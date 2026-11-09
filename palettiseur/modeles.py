@@ -2,15 +2,20 @@
 
 Unités : centimètres pour les longueurs, kilogrammes pour les masses.
 
-Repère d'une palette : origine au coin de la palette.
+Repère d'une palette : origine au coin de la zone utile, mêmes axes que le notebook CDP_3.
 
-- axe X : la largeur, 2,74 m en travers de l'avion. Les deux extrémités de cet axe sont les côtés du couloir :
-  on y laisse un passage (14 cm par côté par défaut), d'où une largeur utile de 2,46 m ;
-- axe Y : la longueur, 2,24 m dans le sens de l'avion (4,48 m pour une BIPAL) ;
+- axe X : 2,74 m (« L » du notebook) ;
+- axe Y : 2,24 m (« W » du notebook ; 4,48 m pour une BIPAL, 6,72 m pour une TRIPAL) ;
 - axe Z : vers le haut.
 
-Règle IATA (notebook CDP_3, appliquée sur l'axe du couloir) : un colis dangereux est posé contre l'un des deux
-bords en x, « gauche » (x minimal) ou « droite » (x maximal), et aucun colis ne le masque de ce côté.
+Côtés : les deux extrémités de l'axe ``axe_cotes`` sont le côté « gauche » (coordonnée minimale) et le côté « droite »
+(coordonnée maximale). Le notebook CDP_3 vérifie la visibilité des colis dangereux depuis ces côtés « de largeur »,
+c'est-à-dire sur l'axe Y (valeur par défaut). C'est aussi là que se trouve le couloir : on y laisse 14 cm par côté
+(``reduction_couloir``), et un colis dangereux est posé contre l'un de ces deux bords. L'axe X peut être choisi à la
+place avec ``axe_cotes="x"``.
+
+Règle IATA (notebook CDP_3) : un colis dangereux reste visible depuis l'un des deux côtés, c'est-à-dire qu'aucun autre
+colis ne le masque de ce côté (projections qui se chevauchent sur les deux autres axes et colis qui le dépasse).
 """
 
 from __future__ import annotations
@@ -106,15 +111,21 @@ class TypePalette:
 
     code: str            # "10K", "BIPAL", "TRIPAL"
     libelle: str
-    largeur: float       # cm, axe X
-    longueur: float      # cm, axe Y (sens de l'avion)
+    largeur: float       # cm, étendue utile selon l'axe X
+    longueur: float      # cm, étendue utile selon l'axe Y
     hauteur_max: float   # cm
     masse_max: float     # kg, masse nette maximale de chargement
     positions: int       # nombre d'emplacements occupés dans l'avion
+    axe_cotes: str = "y"  # axe dont les deux extrémités sont les côtés (couloir, accès IATA) : "x" ou "y"
 
     @property
     def surface(self) -> float:
         return self.largeur * self.longueur
+
+    @property
+    def etendue_cotes(self) -> float:
+        """Étendue utile selon l'axe des côtés (entre le côté « gauche » et le côté « droite »)."""
+        return self.largeur if self.axe_cotes == "x" else self.longueur
 
 
 @dataclass
@@ -204,18 +215,23 @@ class Palette:
         sol = sum(p.base for p in self.placements if p.z <= 1e-6)
         return min(1.0, sol / self.type.surface)
 
-    def vers_dict(self, tare: float = 0.0, largeur_physique: float | None = None) -> dict[str, Any]:
-        """Résumé sérialisable. ``largeur_physique`` : largeur du plateau (274 cm) ; l'écart avec la largeur utile
-        donne le passage laissé de chaque côté (côtés du couloir)."""
+    def vers_dict(self, tare: float = 0.0, largeur_physique: float | None = None,
+                  longueur_physique: float | None = None) -> dict[str, Any]:
+        """Résumé sérialisable. ``largeur_physique`` et ``longueur_physique`` : dimensions du plateau (274 cm et
+        224 cm par emplacement) ; l'écart avec la zone utile donne le passage laissé de chaque côté du couloir."""
         cx, cy, cz = self.centre_de_masse()
-        physique = max(largeur_physique or self.type.largeur, self.type.largeur)
+        phys_x = max(largeur_physique or self.type.largeur, self.type.largeur)
+        phys_y = max(longueur_physique or self.type.longueur, self.type.longueur)
         return {
             "numero": self.numero,
             "type": self.type.code,
             "libelle_type": self.type.libelle,
             "largeur": self.type.largeur,
-            "largeur_physique": physique,
-            "marge_couloir": round((physique - self.type.largeur) / 2, 3),
+            "largeur_physique": phys_x,
+            "marge_x": round((phys_x - self.type.largeur) / 2, 3),
+            "marge_y": round((phys_y - self.type.longueur) / 2, 3),
+            "axe_cotes": self.type.axe_cotes,
+            "longueur_physique": phys_y,
             "longueur": self.type.longueur,
             "hauteur_max": self.type.hauteur_max,
             "masse_max": self.type.masse_max,
@@ -241,12 +257,14 @@ class Palette:
 class Parametres:
     """Paramètres de l'avion, des palettes et de l'algorithme (valeurs par défaut A400M)."""
 
-    # Palette 10k : 224 cm de longueur (sens de l'avion) sur 274 cm de largeur (en travers). Le couloir est sur les
-    # deux côtés de la largeur : on y laisse 14 cm de chaque côté (largeur utile 246 cm), sauf dérogation.
-    largeur_palette: float = 274.0
-    longueur_palette: float = 224.0
+    # Palette 10k : 274 cm sur l'axe X et 224 cm sur l'axe Y (L = 2,74 m et W = 2,24 m dans le notebook). Le couloir est
+    # sur les deux côtés de l'axe ``axe_cotes`` (Y par défaut, comme la visibilité IATA du notebook) : on y laisse
+    # 14 cm de chaque côté, sauf dérogation.
+    largeur_palette: float = 274.0       # axe X
+    longueur_palette: float = 224.0      # axe Y, par emplacement (BIPAL : 2 x, TRIPAL : 3 x)
     reduction_couloir: float = 14.0
     derogation_couloir: bool = False
+    axe_cotes: str = "y"                 # axe des côtés (couloir et accès IATA) : "y" comme le notebook, ou "x"
     hauteur_max: float = 254.0           # cm : 2,54 m, hauteur des palettes du notebook CDP_3
     masse_max_soute: float = 4536.0      # kg, masse brute maximale d'une 10k en soute
     masse_max_rampe: float = 3000.0      # kg, masse brute maximale sur la rampe
@@ -273,6 +291,7 @@ class Parametres:
     jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
 
     # Algorithme
+    mode_notebook: bool = False          # True : reproduit le notebook à la lettre (4 ordres en phase 1, transferts sans rotation)
     duree_recherche: float = 4.0         # secondes, budget total de l'heuristique (phases 1, 3 et 5)
     temps_limite_scip: float = 60.0      # secondes par étape SCIP (notebook : temps_limite)
     graine: int = 0
@@ -282,11 +301,26 @@ class Parametres:
         """Le colis dans cette matière d'emballage ne doit-il pas être écrasé ?"""
         return bool(code) and code in {c.strip() for c in self.emballages_ecrasables.split(",")}
 
+    def _reduction(self, axe: str) -> float:
+        """Réduction (cm, total des deux côtés) de l'étendue selon l'axe donné."""
+        if self.derogation_couloir or axe != self.axe_cotes:
+            return 0.0
+        return 2 * self.reduction_couloir
+
     @property
     def largeur_utile(self) -> float:
-        if self.derogation_couloir:
-            return self.largeur_palette
-        return max(0.0, self.largeur_palette - 2 * self.reduction_couloir)
+        """Étendue utile selon X."""
+        return max(0.0, self.largeur_palette - self._reduction("x"))
+
+    @property
+    def longueur_utile(self) -> float:
+        """Étendue utile selon Y pour une palette simple."""
+        return max(0.0, self.longueur_palette - self._reduction("y"))
+
+    def longueur_utile_pour(self, positions: int) -> float:
+        """Étendue utile selon Y pour un format de ``positions`` emplacements accouplés : le couloir n'est laissé qu'aux
+        deux extrémités de l'ensemble."""
+        return max(0.0, positions * self.longueur_palette - self._reduction("y"))
 
     @property
     def masse_nette_max_soute(self) -> float:
@@ -298,16 +332,17 @@ class Parametres:
 
     def types_palettes(self) -> list[TypePalette]:
         """Les formats de palette disponibles, du plus petit au plus grand."""
-        formats = [TypePalette("10K", "Palette 10k", self.largeur_utile, self.longueur_palette,
-                               self.hauteur_max, self.masse_nette_max_soute, 1)]
+        axe = "x" if self.axe_cotes == "x" else "y"
+        formats = [TypePalette("10K", "Palette 10k", self.largeur_utile, self.longueur_utile_pour(1),
+                               self.hauteur_max, self.masse_nette_max_soute, 1, axe)]
         if self.autoriser_bipal:
             formats.append(TypePalette("BIPAL", "BIPAL (2 palettes accouplées)", self.largeur_utile,
-                                       2 * self.longueur_palette, self.hauteur_max,
-                                       2 * self.masse_nette_max_soute, 2))
+                                       self.longueur_utile_pour(2), self.hauteur_max,
+                                       2 * self.masse_nette_max_soute, 2, axe))
         if self.autoriser_tripal:
             formats.append(TypePalette("TRIPAL", "TRIPAL (3 palettes accouplées)", self.largeur_utile,
-                                       3 * self.longueur_palette, self.hauteur_max,
-                                       3 * self.masse_nette_max_soute, 3))
+                                       self.longueur_utile_pour(3), self.hauteur_max,
+                                       3 * self.masse_nette_max_soute, 3, axe))
         return formats
 
     @staticmethod

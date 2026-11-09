@@ -130,51 +130,68 @@ def test_tassement_ne_glisse_pas_un_colis_lourd_sur_un_plus_leger():
     assert opt._aire_commune(h, ll) == 0.0 and _charge_valide(ch, p, R)
 
 
-@pytest.mark.parametrize("graine", range(6))
-def test_tassement_ne_masque_jamais_un_colis_iata_des_deux_cotes(graine):
-    """Sans la règle du bord, un colis dangereux reste au moins visible depuis un côté du couloir après tassement."""
+def poser(axe, colis_, s, t, z, ds, dt, dz):
+    """Boîte dont ``s`` / ``ds`` sont la position et la taille sur l'axe des côtés, ``t`` / ``dt`` sur l'autre axe."""
+    return (colis_, s, t, z, ds, dt, dz) if axe == "x" else (colis_, t, s, z, dt, ds, dz)
+
+
+@pytest.mark.parametrize("axe", ["y", "x"])
+@pytest.mark.parametrize("graine", range(4))
+def test_tassement_ne_masque_jamais_un_colis_iata_des_deux_cotes(graine, axe):
+    """Sans la règle du bord, un colis dangereux reste au moins visible depuis un côté après tassement."""
     import random
     rng = random.Random(graine)
-    p = params(iata_au_bord=False)
-    largeur = p.types_palettes()[0].largeur
+    p = params(iata_au_bord=False, axe_cotes=axe)
     ch = _Chargement(p.types_palettes()[0], "soute")
     for k in range(9):                                       # grille de 3 x 3 colis, dangereux aux deux extrémités
-        classe = "3" if k in (0, 8) else ""
-        ch.boites.append(_Boite(colis(k, 60 + rng.randint(0, 40), classe=classe), (k % 3) * 90, (k // 3) * 70, 0, 50, 50, 50))
-    assert opt._iata_ok(ch.boites, p, largeur)
+        c = colis(k, 60 + rng.randint(0, 40), classe="3" if k in (0, 8) else "")
+        _, x, y, z, dx, dy, dz = poser(axe, c, (k % 3) * 90, (k // 3) * 70, 0, 50, 50, 50)
+        ch.boites.append(_Boite(c, x, y, z, dx, dy, dz))
+    assert opt._iata_ok(ch.boites, p, ch.type)
     opt._tasser([ch], p)
     assert _charge_valide(ch, p, R)
     for b in ch.boites:
         if b.colis.classe:
-            assert opt._cotes_visibles(b, ch.boites), b.colis.numero
+            assert opt._cotes_visibles(b, ch.boites, axe), b.colis.numero
 
 
-def test_tassement_garde_un_colis_iata_contre_son_bord():
-    """Avec l'option « IATA sur le bord », le tassement ne décolle jamais un colis dangereux du bord du couloir."""
-    p = params()
-    largeur = p.types_palettes()[0].largeur
+@pytest.mark.parametrize("axe", ["y", "x"])
+def test_tassement_garde_un_colis_iata_contre_son_bord(axe):
+    """Avec l'option « IATA sur le bord », le tassement ne décolle jamais un colis dangereux du bord."""
+    p = params(axe_cotes=axe)
+    etendue = p.types_palettes()[0].etendue_cotes
     iata = colis(1, 60, classe="3")
     autre = colis(2, 100, l=60, w=60, h=50)
-    ch = charge(p, (autre, 100, 0, 0, 60, 60, 50), (iata, 0, 100, 0, 50, 50, 50))
-    assert opt._iata_ok(ch.boites, p, largeur)
+    ch = _Chargement(p.types_palettes()[0], "soute")
+    for c, x, y, z, dx, dy, dz in (poser(axe, autre, 100, 0, 0, 60, 60, 50), poser(axe, iata, 0, 100, 0, 50, 50, 50)):
+        ch.boites.append(_Boite(c, x, y, z, dx, dy, dz))
+    assert opt._iata_ok(ch.boites, p, ch.type)
     opt._tasser([ch], p)
     b = next(x for x in ch.boites if x.colis is iata)
-    assert b.x1 < 0.001 and _charge_valide(ch, p, R) and opt._iata_ok(ch.boites, p, largeur)
-    droite = charge(p, (autre, 100, 0, 0, 60, 60, 50), (iata, largeur - 50, 100, 0, 50, 50, 50))
+    debut = b.x1 if axe == "x" else b.y1
+    assert debut < 0.001 and _charge_valide(ch, p, R) and opt._iata_ok(ch.boites, p, ch.type)
+    droite = _Chargement(p.types_palettes()[0], "soute")
+    for c, x, y, z, dx, dy, dz in (poser(axe, autre, 100, 0, 0, 60, 60, 50),
+                                   poser(axe, iata, etendue - 50, 100, 0, 50, 50, 50)):
+        droite.boites.append(_Boite(c, x, y, z, dx, dy, dz))
     opt._tasser([droite], p)
     b = next(x for x in droite.boites if x.colis is iata)
-    assert largeur - b.x2 < 0.001 and opt._iata_ok(droite.boites, p, largeur)
+    fin = b.x2 if axe == "x" else b.y2
+    assert etendue - fin < 0.001 and opt._iata_ok(droite.boites, p, droite.type)
 
 
-def test_recentrage_conserve_les_positions_relatives():
-    p = params()
+@pytest.mark.parametrize("axe", ["y", "x"])
+def test_recentrage_conserve_les_positions_relatives(axe):
+    p = params(axe_cotes=axe)
     iata = colis(1, 50, classe="3")
-    ch = charge(p, (iata, 0, 10, 0, 50, 50, 50), (colis(2, 400), 50, 10, 0, 50, 50, 50))
+    ch = _Chargement(p.types_palettes()[0], "soute")
+    for c, x, y, z, dx, dy, dz in (poser(axe, iata, 0, 10, 0, 50, 50, 50), poser(axe, colis(2, 400), 50, 10, 0, 50, 50, 50)):
+        ch.boites.append(_Boite(c, x, y, z, dx, dy, dz))
     avant = [(b.x1 - ch.boites[0].x1, b.y1 - ch.boites[0].y1) for b in ch.boites]
     opt._recentrer([ch], p)
     assert [(b.x1 - ch.boites[0].x1, b.y1 - ch.boites[0].y1) for b in ch.boites] == avant
-    assert ch.boites[0].x1 < 0.001                               # le colis IATA reste contre le bord (à 5 µm près)
-    assert opt._iata_ok(ch.boites, p, ch.type.largeur)
+    assert (ch.boites[0].x1 if axe == "x" else ch.boites[0].y1) < 0.001      # le colis IATA reste contre le bord (à 5 µm près)
+    assert opt._iata_ok(ch.boites, p, ch.type)
 
 
 def test_tassement_n_isole_pas_un_colis():
@@ -253,15 +270,93 @@ def test_resultat_contient_etapes_et_journal():
     assert res.etapes[-1].palettes == res.palettes
 
 
-def test_exemple_cdp_deux_palettes_sans_erreur():
+def test_exemple_cdp_reproduit_le_notebook():
+    """Mode notebook : avec les paramètres du notebook, l'application donne exactement ses résultats (CDP_4, 54 colis).
+
+    Valeurs lues dans la sortie du notebook exécuté : 4 ordres de la phase 1 (2 palettes 443 cm, 2 palettes 329 cm,
+    3 palettes 363 cm, 3 palettes 346 cm ; 220 116 positions testées), 14 colis déplacés par la fusion, 12 passages et
+    12,584 m de tassement horizontal, et finalement 2 palettes de 218 et 141 cm (somme 359 cm).
+    """
     ex = api.exemple("cdp")
     assert len(ex["colis"]) == 54 and sum(c["masse"] for c in ex["colis"]) == 2290
     p = Parametres.depuis_dict(ex["parametres"])
-    p.duree_recherche = 3.0
+    assert p.mode_notebook and p.derogation_couloir and not p.iata_au_bord
+    p.temps_limite_scip = 12          # le notebook utilise 180 s ; la fusion a besoin de 5 s, la phase 4 ne trouve rien
     res = opt.optimiser([Colis.depuis_dict(c) for c in ex["colis"]], p)
-    assert len(res.palettes) == 2 and res.positions_utilisees == 2
+    assert res.moteur == "notebook" and len(res.palettes) == 2 and res.positions_utilisees == 2
     assert [m for m in verifier(res) if m.niveau == "erreur"] == []
-    assert all(pl.dz == pl.colis.hauteur for pal in res.palettes for pl in pal.placements)
+    assert all(abs(pl.dz - pl.colis.hauteur) < 1e-6 for pal in res.palettes for pl in pal.placements)
+    phase1, phase3, phase4, phase5 = res.journal[0], res.journal[2], res.journal[3], res.journal[4]
+    assert "ordre 1 → 2 palette(s), 443 cm ; ordre 2 → 2 palette(s), 329 cm ; ordre 3 → 3 palette(s), 363 cm ; " \
+           "ordre 4 → 3 palette(s), 346 cm" in phase1["texte"] and phase1["positions_testees"] == 220116
+    assert [round(e.somme_hauteurs if hasattr(e, "somme_hauteurs") else sum(q.hauteur for q in e.palettes))
+            for e in res.etapes[:1]] == [329]
+    assert phase3["colis_transferes"] == 14
+    assert phase4["mouvements"] == 0 and phase4["hauteur_avant"] == pytest.approx(218.0)
+    assert "12 passage(s), 12.584 m" in phase5["texte"]
+    assert sorted(round(q.hauteur) for q in res.palettes) == [141, 218]
+    assert round(sum(q.hauteur for q in res.palettes)) == 359
+
+
+def test_mode_notebook_laisse_les_accroches_inactives():
+    """Les règles de l'application ne restent pas branchées sur le code du notebook après un calcul."""
+    from palettiseur import notebook_cdp
+    opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(6)],
+                  Parametres(duree_recherche=0.5, mode_notebook=True, temps_limite_scip=2))
+    assert notebook_cdp.HOOKS.regles is None and notebook_cdp.HOOKS.incompatibles is None
+
+
+@pytest.mark.parametrize("axe", ["y", "x"])
+def test_mode_notebook_applique_les_regles_de_l_application(axe):
+    """Avec le code du notebook, le plan respecte aussi les cartons, le lourd sur léger, les armes et le bord IATA."""
+    import random
+    from palettiseur.geometrie import cotes_bord, cotes_visibles
+    from palettiseur.iata import classe as classe_de
+    rng = random.Random(4)
+    lot = [Colis(f"C{i}", rng.randint(30, 90), rng.randint(30, 70), rng.randint(20, 60), rng.randint(5, 150),
+                 emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "3", "9", "ARME", "SECU"]),
+                 fragile=rng.random() < 0.05) for i in range(26)]
+    prm = Parametres(duree_recherche=1.0, mode_notebook=True, temps_limite_scip=3, axe_cotes=axe)
+    res = opt.optimiser(lot, prm)
+    assert res.moteur == "notebook" and not res.non_places
+    assert [m for m in verifier(res) if m.niveau == "erreur"] == []
+    for pal in res.palettes:
+        for p in pal.placements:
+            if classe_de(p.colis.classe).iata:
+                assert set(cotes_visibles(p, pal.placements, axe)) & set(
+                    cotes_bord(p, pal.type.etendue_cotes, prm.jeu_contact, axe)), p.colis.numero
+
+
+def test_mode_notebook_cede_la_place_au_moteur_de_l_application():
+    """Le notebook ne connaît pas la BIPAL : un colis de 3 m fait passer le calcul sur le moteur de l'application."""
+    lot = [Colis("long", 320, 80, 60, 400), Colis("petit", 50, 50, 50, 30)]
+    res = opt.optimiser(lot, Parametres(duree_recherche=0.5, mode_notebook=True))
+    assert res.moteur == "heuristique" and res.palettes[0].type.code == "BIPAL" and not res.non_places
+    assert "Mode notebook indisponible" in res.journal[0]["texte"] and "BIPAL" in res.journal[0]["texte"]
+
+
+def test_mode_notebook_en_axe_x_est_le_miroir_du_notebook():
+    """Axe x : l'application transpose le problème (x <-> y) avant d'appeler le notebook, qui garde ses côtés sur y."""
+    ex = api.exemple("cdp")
+    lot = [Colis.depuis_dict(c) for c in ex["colis"]]
+    base = dict(derogation_couloir=True, iata_au_bord=False, facteur_masse=1000.0, emballages_ecrasables="",
+                tare_palette=0, mode_notebook=True, temps_limite_scip=1, duree_recherche=1)
+    suite = opt._placement_heuristique  # noqa: F841 - le calcul complet est trop long : on compare la phase 1
+    from palettiseur import notebook_cdp
+    a_placer = lambda p: [(c, p.types_palettes()[0]) for c in lot]  # noqa: E731
+    px = Parametres(axe_cotes="x", **base)
+    py = Parametres(axe_cotes="y", **base)
+    ctx_x = notebook_cdp.Contexte(a_placer(px), px, regles())
+    assert ctx_x.palettes_nb[0]["L"] == pytest.approx(2.24) and ctx_x.palettes_nb[0]["W"] == pytest.approx(2.74)
+    ctx_y = notebook_cdp.Contexte(a_placer(py), py, regles())
+    assert ctx_y.palettes_nb[0]["L"] == pytest.approx(2.74) and ctx_y.palettes_nb[0]["W"] == pytest.approx(2.24)
+    # un aller-retour de conversion conserve les positions
+    chs = ctx_x.vers_chargements({"palettes": [{"id": 1, "colis": [
+        {"id": 1, "m": 15, "iata": "9", "x": 0.4, "y": -0.3, "z": 0.075, "l_place": 0.45, "w_place": 0.3, "h_place": 0.15}]}]})
+    b = chs[0].boites[0]
+    assert (round(b.x1, 6), round(b.y1, 6), round(b.dx, 6), round(b.dy, 6)) == (92, 129.5, 30, 45)
+    retour = ctx_x.depuis_chargements(chs)["palettes"][0]["colis"][0]
+    assert (round(retour["x"], 6), round(retour["y"], 6)) == (0.4, -0.3)
 
 
 def test_resultat_json_avec_etapes():

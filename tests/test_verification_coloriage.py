@@ -1,3 +1,5 @@
+import pytest
+
 from palettiseur import avion
 from palettiseur.coloriage import coloriage_carte, dsatur, graphe_contact
 from palettiseur.geometrie import en_contact
@@ -6,9 +8,17 @@ from palettiseur.optimisation import optimiser
 from palettiseur.verification import verifier
 
 
+def palette_vide(axe="y", **params):
+    return Palette(1, Parametres(axe_cotes=axe, **params).types_palettes()[0])
+
+
+def pl(axe, colis, s, t, z, ds, dt, dz):
+    """Placement : ``s`` / ``ds`` sur l'axe des côtés, ``t`` / ``dt`` sur l'autre axe horizontal."""
+    return Placement(colis, s, t, z, ds, dt, dz) if axe == "x" else Placement(colis, t, s, z, dt, ds, dz)
+
+
 def palette_manuelle():
-    t = Parametres().types_palettes()[0]
-    pal = Palette(1, t)
+    pal = palette_vide()
     pal.placements = [
         Placement(Colis("A", 100, 100, 50, 200), 0, 0, 0, 100, 100, 50),
         Placement(Colis("B", 100, 100, 50, 300), 0, 0, 50, 100, 100, 50),      # plus lourd sur plus léger
@@ -19,8 +29,8 @@ def palette_manuelle():
     return pal
 
 
-def codes_de(pal, **params):
-    return [m for m in verifier(Resultat([pal], [], Parametres(**params)))]
+def messages(pal, **params):
+    return verifier(Resultat([pal], [], Parametres(**params)))
 
 
 def test_verification_detecte_les_violations():
@@ -31,55 +41,56 @@ def test_verification_detecte_les_violations():
     assert "iata_acces" not in codes        # C et D ne sont masqués d'aucun côté
 
 
-def test_verification_colis_iata_masque_des_deux_cotes():
-    """Le couloir est sur les côtés (axe x) : un colis qui dépasse à gauche et un autre à droite masquent l'étiquette."""
-    t = Parametres().types_palettes()[0]
-    pal = Palette(1, t)
+@pytest.mark.parametrize("axe", ["x", "y"])
+def test_verification_colis_iata_masque_des_deux_cotes(axe):
+    """Les côtés sont les extrémités de l'axe choisi (y comme le notebook, ou x) : un colis qui dépasse d'un côté et un
+    autre de l'autre côté masquent l'étiquette."""
+    pal = palette_vide(axe)
+    m = Colis("M", 50, 50, 50, 10, classe="3")
     pal.placements = [
-        Placement(Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50),     # colis dangereux
-        Placement(Colis("P", 100, 30, 50, 10), 0, 10, 0, 100, 30, 50),                # à gauche (x plus petit)
-        Placement(Colis("Q", 96, 30, 50, 10), 150, 10, 0, 96, 30, 50),                # à droite (x plus grand)
+        pl(axe, m, 100, 0, 0, 50, 50, 50),                                      # colis dangereux
+        pl(axe, Colis("P", 100, 30, 50, 10), 0, 10, 0, 100, 30, 50),            # avant lui sur l'axe des côtés
+        pl(axe, Colis("Q", 46, 30, 50, 10), 150, 10, 0, 46, 30, 50),            # après lui
     ]
-    msgs = [m for m in codes_de(pal, iata_au_bord=False) if m.code == "iata_acces"]
+    msgs = [x for x in messages(pal, axe_cotes=axe, iata_au_bord=False) if x.code == "iata_acces"]
     assert len(msgs) == 1 and msgs[0].niveau == "erreur" and msgs[0].colis == ["M"]
-    # sans Q, le colis reste visible côté droit : plus d'erreur
+    # sans Q, le colis reste visible de l'autre côté : plus d'erreur
     pal.placements.pop()
-    assert not [m for m in codes_de(pal, iata_au_bord=False) if m.code == "iata_acces"]
+    assert not [x for x in messages(pal, axe_cotes=axe, iata_au_bord=False) if x.code == "iata_acces"]
 
 
-def test_verification_colis_iata_doit_etre_sur_le_bord():
-    t = Parametres().types_palettes()[0]
-    pal = Palette(1, t)
-    pal.placements = [Placement(Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50)]
-    msgs = [m for m in codes_de(pal) if m.code == "iata_bord"]
+@pytest.mark.parametrize("axe", ["x", "y"])
+def test_verification_colis_iata_doit_etre_sur_le_bord(axe):
+    pal = palette_vide(axe)
+    fin = pal.type.etendue_cotes - 50
+    pal.placements = [pl(axe, Colis("M", 50, 50, 50, 10, classe="3"), 100, 0, 0, 50, 50, 50)]
+    msgs = [x for x in messages(pal, axe_cotes=axe) if x.code == "iata_bord"]
     assert len(msgs) == 1 and msgs[0].niveau == "erreur" and msgs[0].colis == ["M"]
-    assert not [m for m in codes_de(pal, iata_au_bord=False) if m.code == "iata_bord"]   # règle désactivable
-    # contre le bord gauche, puis contre le bord droit (largeur utile 246 cm) : conforme
-    for x in (0, 196):
-        pal.placements = [Placement(Colis("M", 50, 50, 50, 10, classe="3"), x, 0, 0, 50, 50, 50)]
-        assert not [m for m in codes_de(pal) if m.code in ("iata_bord", "iata_acces")]
+    assert not [x for x in messages(pal, axe_cotes=axe, iata_au_bord=False) if x.code == "iata_bord"]   # règle désactivable
+    # contre le bord « gauche », puis contre le bord « droite » : conforme
+    for s in (0, fin):
+        pal.placements = [pl(axe, Colis("M", 50, 50, 50, 10, classe="3"), s, 0, 0, 50, 50, 50)]
+        assert not [x for x in messages(pal, axe_cotes=axe) if x.code in ("iata_bord", "iata_acces")]
 
 
 def test_verification_ne_pas_ecraser_un_carton():
-    t = Parametres().types_palettes()[0]
-    pal = Palette(1, t)
+    pal = palette_vide()
     base = Colis("K", 100, 100, 50, 200, emballage="carton")
     pal.placements = [Placement(base, 0, 0, 0, 100, 100, 50),
                       Placement(Colis("L", 100, 100, 50, 10), 0, 0, 50, 100, 100, 50)]       # 10 kg sur un carton de 200 kg
-    msgs = [m for m in codes_de(pal) if m.code == "carton"]
+    msgs = [m for m in messages(pal) if m.code == "carton"]
     assert len(msgs) == 1 and msgs[0].niveau == "erreur" and msgs[0].colis == ["L", "K"]
-    assert not [m for m in codes_de(pal, charge_max_carton=10) if m.code == "carton"]        # charge tolérée
+    assert not [m for m in messages(pal, charge_max_carton=10) if m.code == "carton"]        # charge tolérée
     base.emballage = "bois"
-    assert not [m for m in codes_de(pal) if m.code == "carton"]
+    assert not [m for m in messages(pal) if m.code == "carton"]
 
 
 def test_verification_colis_isole_en_avertissement():
-    t = Parametres().types_palettes()[0]
-    pal = Palette(1, t)
+    pal = palette_vide()
     pal.placements = [Placement(Colis("A", 50, 50, 50, 10), 0, 0, 0, 50, 50, 50),
                       Placement(Colis("B", 50, 50, 50, 10), 50, 0, 0, 50, 50, 50),          # touche A
-                      Placement(Colis("C", 50, 50, 50, 10), 150, 150, 0, 50, 50, 50)]       # seul à l'écart
-    msgs = [m for m in codes_de(pal) if m.code == "isole"]
+                      Placement(Colis("C", 50, 50, 50, 10), 150, 140, 0, 50, 50, 50)]       # seul à l'écart
+    msgs = [m for m in messages(pal) if m.code == "isole"]
     assert [m.colis for m in msgs] == [["C"]] and msgs[0].niveau == "avertissement"
 
 

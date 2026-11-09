@@ -233,6 +233,7 @@ function ouvrirParametres() {
   majAidePassagers();
   majAideMoteur();
   majAideLargeurUtile();
+  majAideModeNotebook();
   $('#dlg-parametres').showModal();
 }
 function lireParametres() {
@@ -248,11 +249,19 @@ function lireParametres() {
 }
 function majAideLargeurUtile() {
   const val = (k) => parseFloat($(`[data-param=${k}]`).value) || 0;
+  const axe = $('[data-param=axe_cotes]').value === 'x' ? 'x' : 'y';
   const derog = $('[data-param=derogation_couloir]').checked;
-  const utile = derog ? val('largeur_palette') : Math.max(0, val('largeur_palette') - 2 * val('reduction_couloir'));
+  const r = derog ? 0 : 2 * val('reduction_couloir');
+  const ux = val('largeur_palette') - (axe === 'x' ? r : 0), uy = val('longueur_palette') - (axe === 'y' ? r : 0);
   $('#aide-largeur-utile').textContent = derog
-    ? `Largeur utile : ${nombre(utile)} cm (pas de couloir).`
-    : `Largeur utile : ${nombre(utile)} cm, soit ${nombre(val('largeur_palette'))} cm moins ${nombre(val('reduction_couloir'))} cm de couloir de chaque côté.`;
+    ? `Zone utile : ${nombre(ux)} × ${nombre(uy)} cm (x × y), sans couloir.`
+    : `Zone utile : ${nombre(ux)} × ${nombre(uy)} cm (x × y) : couloir de ${nombre(val('reduction_couloir'))} cm de chaque côté, sur l'axe ${axe}.`;
+}
+function majAideModeNotebook() {
+  const actif = $('[data-param=mode_notebook]').checked;
+  $('#aide-mode-notebook').textContent = actif
+    ? 'Les phases 1, 3, 4 et 5 sont exécutées par le code du notebook : mêmes quatre ordres, mêmes transferts, mêmes tassements. Comme dans le notebook, la phase 4 emploie tout le « Temps SCIP par étape » si elle ne trouve rien à abaisser. Indisponible avec BIPAL / TRIPAL ou au-delà de 150 colis (le moteur de l\'application prend alors le relais).'
+    : '';
 }
 function majAidePassagers() {
   const pax = parseInt($('[data-param=passagers]').value || '0', 10);
@@ -440,7 +449,7 @@ function afficherBilan() {
     ligne('Charge totale', `${nombre(b.masse_totale_brute)} / ${nombre(b.capacite_avion)} kg`, masseOk ? 'bon' : 'mauvais'),
     ligne('Hauteur globale', `${nombre(b.hauteur_globale)} cm`),
     ligne('Somme des hauteurs', `${nombre(b.somme_hauteurs)} cm`),
-    ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${res.moteur === 'scip' ? 'SCIP' : 'heuristique'}`),
+    ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${{ scip: 'SCIP', notebook: 'code du notebook' }[res.moteur] || 'heuristique'}`),
   ].join('');
   $('#boutons-export').hidden = false;
   $('#info-export').hidden = true;
@@ -461,7 +470,7 @@ function afficherInfoPalette(numero) {
   const [cx, cy] = p.centre_de_masse;
   zone.innerHTML = `<div class="fiche-info"><dl>
     <dt>Type</dt><dd>${echapper(p.libelle_type)} · ${p.zone === 'rampe' ? '<span class="chip">rampe</span>' : 'soute'}</dd>
-    <dt>Dimensions utiles</dt><dd>${nombre(p.largeur)} × ${nombre(p.longueur)} × ${nombre(p.hauteur_max)} cm <span class="aide">(plateau ${nombre(p.largeur_physique)} cm, couloir de ${nombre(p.marge_couloir, 1)} cm de chaque côté)</span></dd>
+    <dt>Dimensions utiles</dt><dd>${nombre(p.largeur)} × ${nombre(p.longueur)} × ${nombre(p.hauteur_max)} cm <span class="aide">(plateau ${nombre(p.largeur_physique)} × ${nombre(p.longueur_physique)} cm, couloir de ${nombre(p.axe_cotes === 'x' ? p.marge_x : p.marge_y, 1)} cm de chaque côté, sur l'axe ${p.axe_cotes})</span></dd>
     <dt>Masse nette</dt><dd>${nombre(p.masse, 1)} / ${nombre(p.masse_max)} kg<div class="barre-jauge"><span class="${tauxMasse > 1 ? 'mauvais' : ''}" style="width:${Math.min(100, tauxMasse * 100)}%"></span></div></dd>
     <dt>Masse brute estimée</dt><dd>${nombre(p.masse_brute, 1)} kg <span class="aide">(avec ${p.positions} palette(s) vide(s))</span></dd>
     <dt>Hauteur</dt><dd>${nombre(p.hauteur, 1)} cm</dd>
@@ -652,21 +661,27 @@ function planCsv() {
 
 // ---------------------------------------------------------------- fiche palette
 function plan2D(p) {
-  // Vue de dessus SVG : rectangles des colis (les plus hauts par-dessus), numéro au centre.
-  const phys = p.largeur_physique || p.largeur, marge = (phys - p.largeur) / 2;
-  const W = 360, ech = W / phys, H = p.longueur * ech, decal = marge * ech;
+  // Vue de dessus SVG : rectangles des colis (les plus hauts par-dessus), numéro au centre, couloirs en gris.
+  const physX = p.largeur_physique || p.largeur, physY = p.longueur_physique || p.longueur;
+  const W = 360, ech = W / physX, H = physY * ech;
+  const dx = (p.marge_x || 0) * ech, dy = (p.marge_y || 0) * ech;
   const tri = [...p.placements].sort((a, b) => (a.z + a.dz) - (b.z + b.dz));
   const rects = tri.map((pl) => {
     const coul = etat.classes[pl.colis.classe]?.couleur || etat.classes['']?.couleur || '#b8c2cc';
-    return `<rect x="${decal + pl.x * ech}" y="${(p.longueur - pl.y - pl.dy) * ech}" width="${pl.dx * ech}" height="${pl.dy * ech}" fill="${coul}" stroke="#1f2937" stroke-width="1"/>
-      <text x="${decal + (pl.x + pl.dx / 2) * ech}" y="${(p.longueur - pl.y - pl.dy / 2) * ech + 4}" font-size="10" text-anchor="middle" font-family="Arial">${echapper(pl.colis.numero)}</text>`;
+    const x = dx + pl.x * ech, y = H - dy - (pl.y + pl.dy) * ech;
+    return `<rect x="${x}" y="${y}" width="${pl.dx * ech}" height="${pl.dy * ech}" fill="${coul}" stroke="#1f2937" stroke-width="1"/>
+      <text x="${x + pl.dx * ech / 2}" y="${y + pl.dy * ech / 2 + 4}" font-size="10" text-anchor="middle" font-family="Arial">${echapper(pl.colis.numero)}</text>`;
   }).join('');
+  const nom = (dy > 0 || dx > 0) ? 'COULOIR' : 'CÔTÉ';
+  const bandes = p.axe_cotes === 'x'
+    ? `<rect x="0" y="0" width="${dx}" height="${H}" fill="#9aa3ad"/><rect x="${W - dx}" y="0" width="${dx}" height="${H}" fill="#9aa3ad"/>
+       <text transform="translate(-6 ${H / 2}) rotate(-90)" font-size="9" text-anchor="middle" font-family="Arial">${nom} GAUCHE (x = 0)</text>
+       <text transform="translate(${W + 12} ${H / 2}) rotate(90)" font-size="9" text-anchor="middle" font-family="Arial">${nom} DROIT (x maximal)</text>`
+    : `<rect x="0" y="0" width="${W}" height="${dy}" fill="#9aa3ad"/><rect x="0" y="${H - dy}" width="${W}" height="${dy}" fill="#9aa3ad"/>
+       <text x="${W / 2}" y="${H + 9}" font-size="9" text-anchor="middle" font-family="Arial">${nom} GAUCHE (y = 0)</text>
+       <text x="${W / 2}" y="-3" font-size="9" text-anchor="middle" font-family="Arial">${nom} DROIT (y maximal)</text>`;
   return `<svg class="plan-2d" width="${W + 40}" height="${H + 20}" viewBox="-20 -10 ${W + 40} ${H + 20}" xmlns="http://www.w3.org/2000/svg">
-    <rect x="0" y="0" width="${W}" height="${H}" fill="#eef1f5" stroke="#14213d" stroke-width="2"/>
-    <rect x="0" y="0" width="${decal}" height="${H}" fill="#9aa3ad"/><rect x="${W - decal}" y="0" width="${decal}" height="${H}" fill="#9aa3ad"/>${rects}
-    <text transform="translate(-6 ${H / 2}) rotate(-90)" font-size="9" text-anchor="middle" font-family="Arial">COULOIR GAUCHE</text>
-    <text transform="translate(${W + 12} ${H / 2}) rotate(90)" font-size="9" text-anchor="middle" font-family="Arial">COULOIR DROITE</text>
-    <text x="${W / 2}" y="${H + 9}" font-size="9" text-anchor="middle" font-family="Arial">AVANT (y = 0)</text>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="#eef1f5" stroke="#14213d" stroke-width="2"/>${bandes}${rects}
   </svg>`;
 }
 function ouvrirFiche() {
@@ -791,7 +806,8 @@ async function initialiser() {
   $('#btn-params-annuler').addEventListener('click', () => $('#dlg-parametres').close());
   $('#btn-params-defaut').addEventListener('click', () => { etat.parametres = { ...etat.config.parametres }; ouvrirParametres(); });
   $('[data-param=passagers]').addEventListener('input', majAidePassagers);
-  for (const k of ['largeur_palette', 'reduction_couloir', 'derogation_couloir']) $(`[data-param=${k}]`).addEventListener('input', majAideLargeurUtile);
+  for (const k of ['largeur_palette', 'longueur_palette', 'reduction_couloir', 'derogation_couloir', 'axe_cotes']) $(`[data-param=${k}]`).addEventListener('input', majAideLargeurUtile);
+  $('[data-param=mode_notebook]').addEventListener('input', majAideModeNotebook);
   $('#select-moteur').addEventListener('change', majAideMoteur);
   $('#form-parametres').addEventListener('submit', (e) => {
     e.preventDefault();

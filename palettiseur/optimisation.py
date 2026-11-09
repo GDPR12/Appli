@@ -152,48 +152,60 @@ def _support_ok(b: _Boite, boites: list[_Boite], params: Parametres, exclu: _Boi
     return aire >= params.support_minimal * b.dx * b.dy - TOL
 
 
-def _cotes_visibles(b: _Boite, boites: list[_Boite], precision: float = TOL_VISIBLE) -> tuple[str, ...]:
-    """Côtés du couloir (« gauche » : x minimal, « droite » : x maximal) depuis lesquels ``b`` reste visible.
+def _bornes_cotes(b: _Boite, axe: str) -> tuple[float, float, float, float]:
+    """(début, fin) de ``b`` sur l'axe des côtés puis sur l'autre axe horizontal."""
+    if axe == "x":
+        return b.x1, b.x2, b.y1, b.y2
+    return b.y1, b.y2, b.x1, b.x2
 
-    Même règle que ``geometrie.cotes_visibles`` (notebook CDP_3, sur l'axe du couloir) appliquée aux boîtes internes,
-    pour les boucles rapides : un autre colis masque un côté s'il dépasse de ``b`` de ce côté et que leurs
-    projections se chevauchent selon y et selon z.
+
+def _cotes_visibles(b: _Boite, boites: list[_Boite], axe: str = "y",
+                    precision: float = TOL_VISIBLE) -> tuple[str, ...]:
+    """Côtés (« gauche » : coordonnée minimale sur ``axe``, « droite » : maximale) depuis lesquels ``b`` reste visible.
+
+    Même règle que ``geometrie.cotes_visibles`` (``cotes_accessibles_iata`` du notebook CDP_4) appliquée aux boîtes
+    internes, pour les boucles rapides : un autre colis masque un côté s'il dépasse de ``b`` de ce côté et que leurs
+    projections se chevauchent selon l'autre axe horizontal et selon z.
     """
     gauche = droite = True
+    s1, s2, t1, t2 = _bornes_cotes(b, axe)
     for o in boites:
         if o is b:
             continue
-        if min(b.y2, o.y2) - max(b.y1, o.y1) > precision and min(b.z2, o.z2) - max(b.z1, o.z1) > precision:
-            if o.x1 < b.x1 - precision:
+        o1, o2, u1, u2 = _bornes_cotes(o, axe)
+        if min(t2, u2) - max(t1, u1) > precision and min(b.z2, o.z2) - max(b.z1, o.z1) > precision:
+            if o1 < s1 - precision:
                 gauche = False
-            if o.x2 > b.x2 + precision:
+            if o2 > s2 + precision:
                 droite = False
             if not gauche and not droite:
                 return ()
     return tuple(cote for cote, libre in (("gauche", gauche), ("droite", droite)) if libre)
 
 
-def _cotes_bord(b: _Boite, largeur: float, jeu: float) -> tuple[str, ...]:
-    """Côtés du couloir contre lesquels ``b`` est posé : « gauche » en x = 0, « droite » en x = largeur utile."""
+def _cotes_bord(b: _Boite, etendue: float, jeu: float, axe: str = "y") -> tuple[str, ...]:
+    """Côtés contre lesquels ``b`` est posé : « gauche » en 0 sur ``axe``, « droite » à ``etendue`` (étendue utile)."""
+    s1, s2, _, _ = _bornes_cotes(b, axe)
     cotes = []
-    if b.x1 <= jeu:
+    if s1 <= jeu:
         cotes.append("gauche")
-    if b.x2 >= largeur - jeu:
+    if s2 >= etendue - jeu:
         cotes.append("droite")
     return tuple(cotes)
 
 
-def _iata_ok(boites: list[_Boite], params: Parametres, largeur: float, nouveau: _Boite | None = None) -> bool:
-    """Chaque colis IATA du chargement (avec ``nouveau`` s'il est donné) reste visible depuis un côté du couloir ;
-    avec ``iata_au_bord``, il est de plus posé contre ce bord, étiquette tournée vers le couloir."""
+def _iata_ok(boites: list[_Boite], params: Parametres, t: TypePalette, nouveau: _Boite | None = None) -> bool:
+    """Chaque colis IATA du chargement (avec ``nouveau`` s'il est donné) reste visible depuis un côté ; avec
+    ``iata_au_bord``, il est de plus posé contre ce bord, étiquette tournée vers le côté."""
     tous = boites if nouveau is None else boites + [nouveau]
+    axe, etendue = t.axe_cotes, t.etendue_cotes
     for b in tous:
         if not b.iata:
             continue
-        visibles = _cotes_visibles(b, tous)
+        visibles = _cotes_visibles(b, tous, axe)
         if not visibles:
             return False
-        if params.iata_au_bord and not any(c in visibles for c in _cotes_bord(b, largeur, params.jeu_contact)):
+        if params.iata_au_bord and not any(c in visibles for c in _cotes_bord(b, etendue, params.jeu_contact, axe)):
             return False
     return True
 
@@ -210,7 +222,7 @@ def _charge_valide(ch: _Chargement, params: Parametres, regles: ReglesSeparation
         for b in bs[i + 1:]:
             if _se_chevauchent(a, b) or not regles.compatibles(a.colis.classe, b.colis.classe):
                 return False
-    return all(_support_ok(b, bs, params) for b in bs) and _iata_ok(bs, params, t.largeur)
+    return all(_support_ok(b, bs, params) for b in bs) and _iata_ok(bs, params, t)
 
 
 def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float,
@@ -238,7 +250,7 @@ def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float
     if z > TOL and aire < params.support_minimal * dx * dy - TOL:
         return False
     if classe_de(colis.classe).iata or any(o.iata for o in ch.boites):
-        return _iata_ok(ch.boites, params, t.largeur, _Boite(colis, x, y, z, dx, dy, dz))
+        return _iata_ok(ch.boites, params, t, _Boite(colis, x, y, z, dx, dy, dz))
     return True
 
 
@@ -312,15 +324,19 @@ def _candidats(boites: list[_Boite], L: float, W: float, dx: float,
                    for x, y, z in sortie}, key=_PAR_Z_Y_X)
 
 
-def _vers_le_bord(candidats: list[tuple[float, float, float]], L: float,
-                  dx: float) -> list[tuple[float, float, float]]:
-    """Ramène chaque position candidate contre l'un des deux bords du couloir (x = 0 ou x = L − dx), en gardant y et z.
+def _vers_le_bord(candidats: list[tuple[float, float, float]], t: TypePalette, dx: float,
+                  dy: float) -> list[tuple[float, float, float]]:
+    """Ramène chaque position candidate contre l'un des deux bords des côtés (coordonnée 0 ou étendue − dimension sur
+    l'axe des côtés), en gardant l'autre coordonnée et z.
 
-    Un colis IATA ne peut être posé que contre un bord : on garde donc, pour chaque (y, z) possible, la position
-    contre le bord gauche et celle contre le bord droit.
+    Un colis IATA ne peut être posé que contre un bord : on garde donc, pour chaque position possible sur l'autre axe
+    et chaque hauteur, la position contre le bord « gauche » et celle contre le bord « droite ».
     """
-    xmax = max(0.0, L - dx)
-    return sorted({(bx, y, z) for _, y, z in candidats for bx in (0.0, round(xmax, 4))}, key=_PAR_Z_Y_X)
+    if t.axe_cotes == "x":
+        fin = round(max(0.0, t.largeur - dx), 4)
+        return sorted({(bx, y, z) for _, y, z in candidats for bx in (0.0, fin)}, key=_PAR_Z_Y_X)
+    fin = round(max(0.0, t.longueur - dy), 4)
+    return sorted({(x, by, z) for x, _, z in candidats for by in (0.0, fin)}, key=_PAR_Z_Y_X)
 
 
 def _ancrages_dbl(boites: list[_Boite], L: float, W: float, dx: float,
@@ -342,8 +358,8 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                         seuil: tuple | None, cpt: _Compteur):
     """Meilleure position du colis sur la palette, strictement meilleure que ``seuil`` (sinon None).
 
-    Variante ``cdp`` : score lexicographique de CDP_3, dans cet ordre : distance d'un colis IATA au bord du couloir
-    le plus proche (en x), base la plus basse, hauteur de la palette, surface couverte au sol, plus grande
+    Variante ``cdp`` : score lexicographique de CDP_4, dans cet ordre : distance d'un colis IATA au côté le plus
+    proche (sur l'axe des côtés, y par défaut), base la plus basse, hauteur de la palette, surface couverte au sol, plus grande
     bande libre, somme des carrés des bandes libres, distance aux bords, support, compacité du tas, centrage
     du centre de masse, distance au centre. Les autres variantes sont des stratégies complémentaires de
     l'application. Un colis IATA n'est posé que contre un bord du couloir (avec ``iata_au_bord``) et toute position
@@ -356,6 +372,7 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
     if ch.masse + m > t.masse_max + TOL or not _classes_compatibles(ch, colis, regles):
         return None
     jeu, support_min = params.jeu_contact, params.support_minimal
+    axe_x = t.axe_cotes == "x"
     iata = classe_de(colis.classe).iata
     bord_iata = iata and params.iata_au_bord
     controle_iata = iata or any(b.iata for b in bs)
@@ -388,7 +405,7 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
         else:
             candidats = _candidats(bs, L, W, dx, dy)
         if bord_iata:
-            candidats = _vers_le_bord(candidats, L, dx)
+            candidats = _vers_le_bord(candidats, t, dx, dy)
         if dbl:
             # « le plus bas, le plus au fond » : chaque position est testée après chute jusqu'au sommet
             # le plus haut sous l'empreinte, ce qui remplit les couches sans vides.
@@ -417,8 +434,11 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                 if seuil_k is not None and primaire > seuil_k[1] + 1e-6:
                     break
             x2, y2 = x + dx, y + dy
-            # Un colis IATA se range d'abord contre un bord du couloir (préférence de CDP_3, sur l'axe x).
-            distance_iata = round(min(x, L - x2), 6) if iata else 0.0
+            # Un colis IATA se range d'abord près d'un côté (préférence du notebook : ``distance_exterieur_iata``).
+            if iata:
+                distance_iata = round(min(x, L - x2) if axe_x else min(y, W - y2), 6)
+            else:
+                distance_iata = 0.0
             cle = (distance_iata, round(primaire, 6))
             if meilleur is not None and cle > meilleur[0][:2]:
                 continue
@@ -484,7 +504,7 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                 else:       # "contact"
                     score = cle + (-round(contact, 3),) + reste
             if meilleur is None or score < meilleur[0]:
-                if controle_iata and not _iata_ok(bs, params, L, _Boite(colis, x, y, z, dx, dy, dz)):
+                if controle_iata and not _iata_ok(bs, params, t, _Boite(colis, x, y, z, dx, dy, dz)):
                     continue
                 meilleur = (score, x, y, z, dx, dy, dz, oi)
     return meilleur
@@ -504,7 +524,8 @@ def _type_requis(colis: Colis, types: list[TypePalette]) -> TypePalette | None:
 
 def _type_rampe(params: Parametres, base: TypePalette) -> TypePalette:
     return TypePalette("10K", "Palette 10k (rampe)", base.largeur, base.longueur,
-                       min(base.hauteur_max, params.hauteur_max_rampe), params.masse_nette_max_rampe, 1)
+                       min(base.hauteur_max, params.hauteur_max_rampe), params.masse_nette_max_rampe, 1,
+                       base.axe_cotes)
 
 
 def _ordre_placement(a_placer: list[tuple[Colis, TypePalette]], params: Parametres, strat: Strategie,
@@ -647,13 +668,18 @@ def _placement_heuristique(a_placer, params, regles, duree, rng):
     """Phase 1 : essaie plusieurs stratégies pendant ``duree`` s et garde la meilleure construction."""
     debut = perf_counter()
     cpt = _Compteur()
-    strategies = strategies_deterministes()
+    strict = params.mode_notebook
+    strategies = strategies_deterministes()[:4] if strict else strategies_deterministes()
     meilleur, meilleur_obj, essais = None, None, []
     sans_amelioration, i = 0, 0
     while True:
+        if strict and i >= len(strategies):
+            break           # mode strict : exactement les quatre ordres du notebook, une fois chacun
         # Les 12 premières stratégies sont déterministes (dont les quatre ordres du notebook) ; ensuite on
         # alterne la liste déterministe et des variantes bruitées des 30 stratégies les plus prometteuses.
-        if i < 12 or (i % 2 == 0 and (i - 12) // 2 + 12 < len(strategies)):
+        if strict:
+            strat = strategies[i]
+        elif i < 12 or (i % 2 == 0 and (i - 12) // 2 + 12 < len(strategies)):
             strat = strategies[i if i < 12 else (i - 12) // 2 + 12]
         else:
             base = strategies[rng.randrange(min(30, len(strategies)))]
@@ -694,29 +720,35 @@ def _reste_valide_sans(ch: _Chargement, original: _Boite, params: Parametres) ->
 
 
 def _placer_dans(dest: _Chargement, colis: Colis, params: Parametres, regles: ReglesSeparation,
-                 compteur: list[int] | None = None):
-    """Première position valide (la plus basse) d'un colis sur la palette, toutes orientations permises.
+                 compteur: list[int] | None = None, orientation: tuple[float, float, float] | None = None):
+    """Première position valide d'un colis sur la palette, comme ``positions`` de ``fusionner_palettes`` du notebook.
 
-    Retourne (clé, x, y, z, dx, dy, dz, orientation) ou None. Masse, classes, support, charge admissible des porteurs
-    et règle IATA sont contrôlés ; un colis IATA n'est posé que contre un bord du couloir.
+    Les positions sont parcourues de la plus basse à la plus proche du centre de la palette (clé ``(z, |x| + |y|)`` du
+    notebook) et la première valide est retenue. Avec ``orientation``, seule celle-ci est essayée (le notebook ne tourne
+    pas un colis transféré) ; sinon toutes les orientations permises sont comparées. Retourne
+    (clé, x, y, z, dx, dy, dz, orientation) ou None. Masse, classes, support, charge admissible des porteurs et règle
+    IATA sont contrôlés ; un colis IATA n'est posé que contre un bord.
     """
     t = dest.type
     if dest.masse + colis.masse > t.masse_max + TOL or not _classes_compatibles(dest, colis, regles):
         return None
     iata = classe_de(colis.classe).iata
     meilleur = None
-    for oi, (dx, dy, dz) in enumerate(orientations(colis)):
+    permises = orientations(colis)
+    for oi, (dx, dy, dz) in enumerate(permises):
+        if orientation is not None and not all(abs(a - b) <= TOL for a, b in zip((dx, dy, dz), orientation)):
+            continue
         if dx > t.largeur + TOL or dy > t.longueur + TOL or dz > t.hauteur_max + TOL:
             continue
         candidats = _candidats(dest.boites, t.largeur, t.longueur, dx, dy)
         if iata and params.iata_au_bord:
-            candidats = _vers_le_bord(candidats, t.largeur, dx)
+            candidats = _vers_le_bord(candidats, t, dx, dy)
+        candidats.sort(key=lambda c: (c[2], abs(c[0] + dx / 2 - t.largeur / 2) + abs(c[1] + dy / 2 - t.longueur / 2)))
         for x, y, z in candidats:
             if compteur is not None:
                 compteur[0] += 1
             if _position_valide(dest, colis, x, y, z, dx, dy, dz, params):
-                distance_iata = round(min(x, t.largeur - (x + dx)), 6) if iata else 0.0
-                cle = (distance_iata, z, abs(x + dx / 2 - t.largeur / 2) + abs(y + dy / 2 - t.longueur / 2))
+                cle = (z, abs(x + dx / 2 - t.largeur / 2) + abs(y + dy / 2 - t.longueur / 2))
                 if meilleur is None or cle < meilleur[0]:
                     meilleur = (cle, x, y, z, dx, dy, dz, oi)
                 break
@@ -762,7 +794,11 @@ def _fusionner(chs: list[_Chargement], params: Parametres, regles: ReglesSeparat
                 if not _reste_valide_sans(src, original, params):
                     continue
                 compteur = [0]
-                trouve = _placer_dans(recv, colis, params, regles, compteur=compteur)
+                # Comme le notebook, on essaie d'abord le colis dans son orientation actuelle ; la rotation n'est tentée
+                # qu'en dernier recours (ajout de l'application), jamais en mode notebook.
+                trouve = _placer_dans(recv, colis, params, regles, compteur, (original.dx, original.dy, original.dz))
+                if trouve is None and not params.mode_notebook:
+                    trouve = _placer_dans(recv, colis, params, regles, compteur)
                 c["emplacements_testes"] += compteur[0]
                 if trouve is not None:
                     _, x, y, z, dx, dy, dz, oi = trouve
@@ -823,14 +859,22 @@ def _recentrer(chs: list[_Chargement], params: Parametres) -> None:
         bas_x, haut_x = max(-b.x1 for b in bs), min(L - b.x2 for b in bs)
         bas_y, haut_y = max(-b.y1 for b in bs), min(W - b.y2 for b in bs)
         if params.iata_au_bord:
+            axe, etendue = ch.type.axe_cotes, ch.type.etendue_cotes
             for b in bs:
                 if not b.iata:
                     continue
-                cotes = _cotes_bord(b, L, jeu)
-                if "gauche" in cotes:
-                    haut_x = min(haut_x, TOL - b.x1)          # le colis reste exactement contre le bord gauche
-                if "droite" in cotes:
-                    bas_x = max(bas_x, (L - TOL) - b.x2)      # ... ou contre le bord droit
+                cotes = _cotes_bord(b, etendue, jeu, axe)
+                s1, s2, _, _ = _bornes_cotes(b, axe)
+                if axe == "x":
+                    if "gauche" in cotes:
+                        haut_x = min(haut_x, TOL - s1)          # le colis reste exactement contre le bord gauche
+                    if "droite" in cotes:
+                        bas_x = max(bas_x, (etendue - TOL) - s2)      # ... ou contre le bord droit
+                else:
+                    if "gauche" in cotes:
+                        haut_y = min(haut_y, TOL - s1)
+                    if "droite" in cotes:
+                        bas_y = max(bas_y, (etendue - TOL) - s2)
         tx = min(max(L / 2 - cx, bas_x), haut_x) if bas_x <= haut_x else 0.0
         ty = min(max(W / 2 - cy, bas_y), haut_y) if bas_y <= haut_y else 0.0
         for b in bs:
@@ -843,19 +887,20 @@ def _deplacement_valide(ch: _Chargement, b: _Boite, params: Parametres) -> bool:
         return False
     if not all(_support_ok(c, bs, params) for c in bs if c is not b and abs(c.z1 - b.z2) <= TOL):
         return False
-    return _iata_ok(bs, params, ch.type.largeur)      # le glissement doit respecter la règle IATA (bord, visibilité)
+    return _iata_ok(bs, params, ch.type)      # le glissement doit respecter la règle IATA (bord, visibilité)
 
 
 def _glisser(ch: _Chargement, b: _Boite, axe: str, params: Parametres, precision: float) -> float:
     """Fait glisser ``b`` vers le centre de la palette selon ``axe`` tant que le chargement reste valide.
 
-    Un colis IATA contre un bord du couloir ne glisse pas en x, et un glissement ne doit isoler aucun colis : ``b`` garde
+    Un colis IATA contre un bord ne glisse pas sur l'axe des côtés, et un glissement ne doit isoler aucun colis : ``b`` garde
     un contact s'il en avait un, et chaque colis qui le touchait en garde un aussi.
     """
     L, W = ch.type.largeur, ch.type.longueur
     x_axe = axe == "x"
     jeu = params.jeu_contact
-    if x_axe and b.iata and params.iata_au_bord and _cotes_bord(b, L, jeu):
+    if axe == ch.type.axe_cotes and b.iata and params.iata_au_bord \
+            and _cotes_bord(b, ch.type.etendue_cotes, jeu, axe):
         return 0.0
     centre_palette = L / 2 if x_axe else W / 2
     centre = (b.x1 + b.x2) / 2 if x_axe else (b.y1 + b.y2) / 2
@@ -1139,12 +1184,36 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
     etapes: list[Etape] = []
     duree = max(0.2, params.duree_recherche)
 
+    # Mode notebook : les phases 1, 3, 4 et 5 sont exécutées par le code du notebook CDP_4 lui-même (module
+    # ``notebook_cdp``), avec les règles de l'application branchées dessus. Impossible avec BIPAL/TRIPAL ou très
+    # nombreux colis : le moteur de l'application prend alors le relais.
+    nb, resultat_nb, note_nb = None, None, ""
+    if params.mode_notebook:
+        from . import notebook_cdp
+        raison = notebook_cdp.Contexte.eligible(a_placer, params)
+        if raison is None:
+            nb = notebook_cdp.Contexte(a_placer, params, regles)
+        else:
+            note_nb = f"Mode notebook indisponible ({raison}) : moteur de l'application utilisé. "
+
     # ---- Phase 1 : placement heuristique --------------------------------------------------
-    chs, echecs, info = _placement_heuristique(a_placer, params, regles, 0.5 * duree, rng)
-    essais = " ; ".join(f"{e['strategie']} → {e['palettes']} palette(s), {e['hauteur']:.0f} cm" for e in info["essais"])
+    if nb is not None:
+        try:
+            with nb.actif():
+                resultat_nb, info = nb.phase1()
+            chs, echecs = nb.vers_chargements(resultat_nb), []
+            essais = " ; ".join(
+                f"ordre {e['ordre']} → " + (f"{e['palettes']} palette(s), {e['hauteur'] * 100:.0f} cm" if "palettes" in e
+                                            else f"échec sur le colis {e['echec_colis']}") for e in info["essais"])
+        except RuntimeError:
+            nb, note_nb = None, ("Mode notebook : aucun des quatre ordres du notebook n'a réussi avec les règles de "
+                                 "l'application, moteur de l'application utilisé. ")
+    if nb is None:
+        chs, echecs, info = _placement_heuristique(a_placer, params, regles, 0.5 * duree, rng)
+        essais = " ; ".join(f"{e['strategie']} → {e['palettes']} palette(s), {e['hauteur']:.0f} cm" for e in info["essais"])
     journal.append(_entree_journal(
         1, "Placement heuristique", info["duree"],
-        f"{info['constructions']} construction(s) et {info['positions_testees']} positions testées. "
+        note_nb + f"{info['constructions']} construction(s) et {info['positions_testees']} positions testées. "
         f"Ordres du notebook : {essais}. Meilleure construction : {len(chs)} palette(s).", chs,
         constructions=info["constructions"], positions_testees=info["positions_testees"]))
     etapes.append(Etape("heuristique", "Phase 1 – placement heuristique",
@@ -1160,6 +1229,8 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
         if dispo:
             t0 = perf_counter()
             chs, info_scip = moteur_scip.reduire_nombre_palettes(chs, params, regles, params.temps_limite_scip)
+            if nb is not None:
+                resultat_nb = nb.depuis_chargements(chs)        # SCIP a pu déplacer des colis : on repart de ses positions
             utilise_scip = True
             journal.append(_entree_journal(2, "Validation et recherche SCIP", perf_counter() - t0,
                                            info_scip["texte"], chs, historique=info_scip.get("historique", []),
@@ -1177,8 +1248,13 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
 
     # ---- Phase 3 : fusion des palettes --------------------------------------------------
     avant_fusion = len(chs)
-    stats = _fusionner(chs, params, regles, 0.15 * duree)
-    _normaliser_zones(chs, params)
+    if nb is not None:
+        with nb.actif():
+            stats = nb.phase3(resultat_nb, max(1.0, params.temps_limite_scip))
+        chs = nb.vers_chargements(resultat_nb)
+    else:
+        stats = _fusionner(chs, params, regles, 0.15 * duree)
+        _normaliser_zones(chs, params)
     journal.append(_entree_journal(
         3, "Fusion des palettes", stats["duree"],
         f"{stats['colis_transferes']} colis déplacé(s), {stats['fusions_reussies']} palette(s) vidée(s) "
@@ -1188,7 +1264,12 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
         chs, **{k: stats[k] for k in ("colis_transferes", "fusions_reussies", "emplacements_testes")}))
 
     # ---- Phase 4 : tassement vertical ---------------------------------------------------------
-    vert = _tasser_vertical(chs, params, 0.25 * duree)
+    if nb is not None:
+        with nb.actif():
+            vert = nb.phase4(resultat_nb, max(1.0, params.temps_limite_scip))
+        chs = nb.vers_chargements(resultat_nb)
+    else:
+        vert = _tasser_vertical(chs, params, 0.25 * duree)
     texte = (f"{vert['mouvements']} replacement(s) plus bas, {vert['colis_deplaces']} colis distinct(s), "
              f"{vert['emplacements_testes']} emplacements testés, {vert['deplacement_lateral']:.3f} m de déplacement "
              f"latéral cumulé, {vert['deplacement_total']:.3f} m de descente cumulée. Hauteur globale : "
@@ -1205,9 +1286,14 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
 
     # ---- Phase 5 : recentrage et tassement horizontal -------------------------------------------
     t0 = perf_counter()
-    _recentrer(chs, params)
-    tass = _tasser(chs, params)
-    _normaliser_zones(chs, params)
+    if nb is not None:
+        with nb.actif():
+            tass = nb.phase5(resultat_nb)
+        chs = nb.vers_chargements(resultat_nb)
+    else:
+        _recentrer(chs, params)
+        tass = _tasser(chs, params)
+        _normaliser_zones(chs, params)
     palettes = _vers_palettes(chs)
     journal.append(_entree_journal(
         5, "Recentrage et tassement horizontal", perf_counter() - t0,
@@ -1220,4 +1306,4 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
     etapes.append(Etape("finale", "Solution finale", "Après fusion, tassement vertical, recentrage et tassement horizontal.",
                         palettes))
     return Resultat(palettes, non_places, params, perf_counter() - debut, info["constructions"],
-                    "scip" if utilise_scip else "heuristique", "ok", etapes, journal)
+                    "scip" if utilise_scip else ("notebook" if nb is not None else "heuristique"), "ok", etapes, journal)

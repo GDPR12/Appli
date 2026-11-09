@@ -155,11 +155,12 @@ def ajouter_non_chevauchement(c):
 
 
 def ajouter_contraintes_iata(c, regles: ReglesSeparation, params: Parametres):
-    """Séparation IATA/armement, accessibilité depuis les côtés du couloir et colis dangereux contre le bord.
+    """Séparation IATA/armement, accessibilité depuis les côtés et colis dangereux contre le bord.
 
-    Tout colis dangereux choisit un côté (gauche : x minimal, droite : x maximal) et aucun autre colis de sa palette
-    ne le masque de ce côté, sauf s'ils sont séparés en y ou en z (cellule IATA de CDP_3, transposée sur l'axe x).
-    Avec ``iata_au_bord``, il est de plus posé contre le bord du côté choisi.
+    Tout colis dangereux choisit un côté (gauche : coordonnée minimale sur l'axe des côtés, droite : maximale) et aucun
+    autre colis de sa palette ne le masque de ce côté, sauf s'ils sont séparés sur l'autre axe horizontal ou en z
+    (cellule IATA du notebook CDP_4, sur l'axe y par défaut). Avec ``iata_au_bord``, il est de plus posé contre le
+    bord du côté choisi.
     """
     from pyscipopt import quicksum
     modele, colis, I, P, a = c["modele"], c["colis"], c["I"], c["P"], c["a"]
@@ -174,33 +175,36 @@ def ajouter_contraintes_iata(c, regles: ReglesSeparation, params: Parametres):
     acces_droite = {i: modele.addVar(vtype="B", name=f"acces_iata_droite_{i}") for i in dangereux}
     for i in dangereux:
         modele.addCons(acces_gauche[i] + acces_droite[i] == 1)
-    # Depuis le couloir, un autre colis ne masque i que si les projections se chevauchent à la fois
-    # selon la longueur y et la hauteur z.
+    # Indice de l'axe des côtés (0 : x, 1 : y) et de l'autre axe horizontal ; z est toujours l'indice 2.
+    k_cote = 0 if params.axe_cotes == "x" else 1
+    k_autre = 1 - k_cote
+    # Depuis un côté, un autre colis ne masque i que si les projections se chevauchent à la fois selon l'autre axe
+    # horizontal et selon la hauteur z.
     for i in dangereux:
         for j in I:
             if i == j:
                 continue
-            separation_yz = (separations[i, j, 1] + separations[j, i, 1] +
-                             separations[i, j, 2] + separations[j, i, 2])
+            separation_autre = (separations[i, j, k_autre] + separations[j, i, k_autre] +
+                                separations[i, j, 2] + separations[j, i, 2])
             for p in P:
-                # Côté gauche (-x) : i doit être devant j, sauf s'ils sont côte à côte en y ou z.
-                modele.addCons(separations[i, j, 0] + separation_yz >= a[i, p] + a[j, p] + acces_gauche[i] - 2)
-                # Côté droit (+x) : ordre inverse selon x.
-                modele.addCons(separations[j, i, 0] + separation_yz >= a[i, p] + a[j, p] + acces_droite[i] - 2)
+                # Côté gauche : i doit être devant j, sauf s'ils sont côte à côte sur l'autre axe ou en z.
+                modele.addCons(separations[i, j, k_cote] + separation_autre >= a[i, p] + a[j, p] + acces_gauche[i] - 2)
+                # Côté droit : ordre inverse sur l'axe des côtés.
+                modele.addCons(separations[j, i, k_cote] + separation_autre >= a[i, p] + a[j, p] + acces_droite[i] - 2)
     # Colis dangereux contre le bord du côté d'accès choisi (centre du colis en mètres, origine au centre palette).
     if params.iata_au_bord:
-        x, dimensions = c["x"], c["dimensions"]
+        coord, dimensions = (c["x"], c["y"])[k_cote], c["dimensions"]
         jeu = params.jeu_contact / 100
         for i in dangereux:
-            li = dimensions[i][0]
+            di = dimensions[i][k_cote]
             for p in P:
-                L = c["palettes"][p]["L"]
+                etendue = c["palettes"][p]["L" if k_cote == 0 else "W"]
                 bord_g = modele.addVar(vtype="B", name=f"bord_gauche_{i}_{p}")
                 bord_d = modele.addVar(vtype="B", name=f"bord_droit_{i}_{p}")
                 modele.addCons(bord_g >= a[i, p] + acces_gauche[i] - 1)       # colis sur la palette p, accès à gauche
                 modele.addCons(bord_d >= a[i, p] + acces_droite[i] - 1)
-                modele.addConsIndicator(x[i] - li / 2 <= -L / 2 + jeu, binvar=bord_g)
-                modele.addConsIndicator(-x[i] - li / 2 <= -L / 2 + jeu, binvar=bord_d)
+                modele.addConsIndicator(coord[i] - di / 2 <= -etendue / 2 + jeu, binvar=bord_g)
+                modele.addConsIndicator(-coord[i] - di / 2 <= -etendue / 2 + jeu, binvar=bord_d)
     c.update(acces_gauche=acces_gauche, acces_droite=acces_droite)
 
 
@@ -299,13 +303,14 @@ def _indices_colis(chs) -> tuple[list[Colis], dict[int, int]]:
 
 
 def _cote_acces(b: _Boite, ch: _Chargement, params: Parametres) -> bool:
-    """Vrai si le colis dangereux est pris à gauche (x minimal), faux s'il l'est à droite.
+    """Vrai si le colis dangereux est pris à gauche (coordonnée minimale sur l'axe des côtés), faux s'il l'est à droite.
 
     Avec ``iata_au_bord``, on prend le bord contre lequel il est posé et d'où il est visible ; sinon le premier côté
     visible (gauche par défaut)."""
-    visibles = _cotes_visibles(b, ch.boites)
+    axe = ch.type.axe_cotes
+    visibles = _cotes_visibles(b, ch.boites, axe)
     if params.iata_au_bord:
-        candidats = [c for c in _cotes_bord(b, ch.type.largeur, params.jeu_contact) if c in visibles]
+        candidats = [c for c in _cotes_bord(b, ch.type.etendue_cotes, params.jeu_contact, axe) if c in visibles]
         return (candidats[0] if candidats else "gauche") == "gauche"
     return "gauche" in visibles or "droite" not in visibles
 

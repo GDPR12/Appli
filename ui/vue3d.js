@@ -1,7 +1,7 @@
 /* ===================== Vue 3D des palettes (Three.js) =====================
- * Repère : X = largeur de la palette (274 cm physiques, dont une bande de couloir de 14 cm de chaque côté, en x = 0 et
- * x = L pour la zone utile), Y = longueur (224 cm, sens de l'avion), Z = vertical. Les colis IATA sont posés contre
- * l'un des deux bords côté couloir. Unités : mètres dans la scène.
+ * Repère du notebook : X = 274 cm, Y = 224 cm (BIPAL : 448 cm), Z = vertical. Les côtés (couloir de 14 cm de chaque côté,
+ * colis IATA posés contre l'un des deux bords) sont les extrémités de l'axe `axe_cotes` : Y comme le notebook, ou X.
+ * L'origine est le coin de la zone utile ; le plateau physique déborde du couloir. Unités : mètres dans la scène.
  */
 import * as THREE from './vendor/three.module.min.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
@@ -148,10 +148,11 @@ export class Vue3D {
     const ecart = 0.6;
     palettes.forEach((pal, index) => {
       const groupe = new THREE.Group();
-      groupe.position.set(0, decalageY, 0);
+      const physY = (pal.longueur_physique || pal.longueur) * CM;
+      groupe.position.set(0, decalageY + ((physY - pal.longueur * CM) / 2), 0);
       this.construirePalette(groupe, pal, palettes.length > 1);
       this.contenu.add(groupe);
-      decalageY += pal.longueur * CM + ecart;
+      decalageY += physY + ecart;
     });
     this.appliquerCouleurs();
     this.recadrer();
@@ -160,11 +161,12 @@ export class Vue3D {
   construirePalette(groupe, pal, ensemble) {
     const L = pal.largeur * CM, W = pal.longueur * CM, H = pal.hauteur_max * CM;
     const Lphys = Math.max(L, (pal.largeur_physique || this.options.largeurPhysique || pal.largeur) * CM);
-    const marge = (Lphys - L) / 2;
+    const Wphys = Math.max(W, (pal.longueur_physique || pal.longueur) * CM);
+    const margeX = (Lphys - L) / 2, margeY = (Wphys - W) / 2;
     const epaisseur = 0.08;
 
     // Plateau physique (aluminium) puis zone utile un peu plus claire.
-    const plateau = new THREE.Mesh(new THREE.BoxGeometry(Lphys, W, epaisseur),
+    const plateau = new THREE.Mesh(new THREE.BoxGeometry(Lphys, Wphys, epaisseur),
       new THREE.MeshLambertMaterial({ color: 0x8b95a1 }));
     plateau.position.set(L / 2, W / 2, -epaisseur / 2);
     plateau.userData.plateau = true;
@@ -172,20 +174,29 @@ export class Vue3D {
     const utile = new THREE.Mesh(new THREE.PlaneGeometry(L, W), new THREE.MeshLambertMaterial({ color: 0xc9d1da }));
     utile.position.set(L / 2, W / 2, 0.001);
     groupe.add(utile);
-    if (marge > 0.005) {
-      // Bandes réservées au couloir, de chaque côté de la zone utile (couleur sombre).
-      for (const x of [-marge / 2, L + marge / 2]) {
-        const bande = new THREE.Mesh(new THREE.PlaneGeometry(marge, W), new THREE.MeshLambertMaterial({ color: 0x6b7480 }));
+    // Bandes réservées au couloir, de chaque côté de la zone utile (couleur sombre), sur l'axe des côtés.
+    const matBande = () => new THREE.MeshLambertMaterial({ color: 0x6b7480 });
+    if (margeX > 0.005) {
+      for (const x of [-margeX / 2, L + margeX / 2]) {
+        const bande = new THREE.Mesh(new THREE.PlaneGeometry(margeX, Wphys), matBande());
         bande.position.set(x, W / 2, 0.0015);
         groupe.add(bande);
       }
     }
-    // Séparation des palettes accouplées (BIPAL / TRIPAL)
+    if (margeY > 0.005) {
+      for (const y of [-margeY / 2, W + margeY / 2]) {
+        const bande = new THREE.Mesh(new THREE.PlaneGeometry(Lphys, margeY), matBande());
+        bande.position.set(L / 2, y, 0.0015);
+        groupe.add(bande);
+      }
+    }
+    // Séparation des palettes accouplées (BIPAL / TRIPAL) : tous les 224 cm du plateau physique
     if (pal.positions > 1) {
-      const unite = W / pal.positions;
+      const unite = Wphys / pal.positions;
       for (let k = 1; k < pal.positions; k++) {
+        const y = k * unite - margeY;
         const ligne = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(-marge, k * unite, 0.003), new THREE.Vector3(L + marge, k * unite, 0.003)]),
+          new THREE.Vector3(-margeX, y, 0.003), new THREE.Vector3(L + margeX, y, 0.003)]),
           new THREE.LineBasicMaterial({ color: 0x1f2937 }));
         groupe.add(ligne);
       }
@@ -196,10 +207,15 @@ export class Vue3D {
     env.position.set(L / 2, W / 2, H / 2);
     env.computeLineDistances();
     groupe.add(env);
-    // Couloirs : un de chaque côté (x minimal et x maximal). Les colis IATA sont posés contre ces bords.
-    for (const [x, texte] of [[-marge - 0.22, 'COULOIR'], [L + marge + 0.22, 'COULOIR']]) {
-      const s = spriteTexte(texte, { taille: 40, fond: 'rgba(20,33,61,0.85)', couleur: '#ffffff', devant: true });
-      s.position.set(x, W / 2, 0.05);
+    // Couloirs : un de chaque côté (seulement s'il y a un espace réservé : pas de couloir avec la dérogation).
+    // Les colis IATA sont posés contre ces bords.
+    const lateral = (pal.axe_cotes || 'y') === 'x';
+    const positions = (lateral ? margeX : margeY) <= 0.005 ? []
+      : lateral ? [[-margeX - 0.22, W / 2], [L + margeX + 0.22, W / 2]]
+        : [[L / 2, -margeY - 0.22], [L / 2, W + margeY + 0.22]];
+    for (const [x, y] of positions) {
+      const s = spriteTexte('COULOIR', { taille: 40, fond: 'rgba(20,33,61,0.85)', couleur: '#ffffff', devant: true });
+      s.position.set(x, y, 0.05);
       s.scale.set(0.18 * s.userData.ratio, 0.18, 1);
       groupe.add(s);
     }

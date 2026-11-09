@@ -70,13 +70,15 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
                                     f"{q.colis.numero} ({emballages().libelle(q.colis.emballage)}), qui ne doit pas être "
                                     f"écrasé (charge maximale {params.charge_max_carton:g} kg).",
                                     n, [c.numero, q.colis.numero]))
-        # Colis IATA : posé contre un bord du couloir et visible depuis ce côté (règle de CDP_3 sur l'axe du couloir)
+        # Colis IATA : posé contre un bord et visible depuis ce côté (règle du notebook CDP_4 sur l'axe des côtés)
         if classe_de(c.classe).iata:
-            visibles = cotes_visibles(p, pls)
+            axe = pal.type.axe_cotes
+            visibles = cotes_visibles(p, pls, axe)
             if not visibles:
                 msgs.append(Message("erreur", "iata_acces", f"Colis {c.numero} (étiquette {c.classe}) est masqué des "
-                                    "deux côtés du couloir par d'autres colis : étiquette non visible.", n, [c.numero]))
-            elif params.iata_au_bord and not any(cote in visibles for cote in cotes_bord(p, L, jeu)):
+                                    "deux côtés par d'autres colis : étiquette non visible.", n, [c.numero]))
+            elif params.iata_au_bord and not any(
+                    cote in visibles for cote in cotes_bord(p, pal.type.etendue_cotes, jeu, axe)):
                 msgs.append(Message("erreur", "iata_bord", f"Colis {c.numero} (étiquette {c.classe}) n'est pas posé "
                                     "contre un bord du couloir : étiquette non accessible.", n, [c.numero]))
         # Colis isolé : aucun contact avec les autres colis (le projet l'interdit)

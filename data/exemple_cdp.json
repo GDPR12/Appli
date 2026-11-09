@@ -1,5 +1,5 @@
 {
- "_description": "Colis du notebook CDP_3 (CARGO données extraites.xlsx) : numéro, masse (kg), longueur, largeur, hauteur (cm), classe IATA pour les colis 1 à 5 (9, 3, 3, 3, 2.2). La hauteur de chaque colis reste verticale. Palettes de 2,54 m de haut, sans tare, avec le couloir de 14 cm par côté de l'application.",
+ "_description": "Colis du notebook CDP_4 (CARGO données extraites.xlsx) : numéro, masse (kg), longueur, largeur, hauteur (cm), classe IATA pour les colis 1 à 5 (9, 3, 3, 3, 2.2). La hauteur de chaque colis reste verticale. Les paramètres sont ceux du notebook : palettes de 2,74 x 2,24 x 2,54 m sans couloir ni tare, aucune des règles propres à l'application (lourd sur léger, bord des colis IATA) et le code du notebook exécuté tel quel : le résultat attendu est de 2 palettes de 218 et 141 cm de haut.",
  "colis": [
   {
    "numero": "1",
@@ -605,6 +605,12 @@
   "positions_rampe": 2,
   "autoriser_bipal": true,
   "autoriser_tripal": true,
-  "hauteur_max_rampe": 254
+  "hauteur_max_rampe": 254,
+  "derogation_couloir": true,
+  "iata_au_bord": false,
+  "facteur_masse": 1000.0,
+  "emballages_ecrasables": "",
+  "mode_notebook": true,
+  "temps_limite_scip": 20
  }
 }

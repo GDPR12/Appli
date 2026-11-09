@@ -76,45 +76,58 @@ def en_contact(p: Placement, q: Placement, jeu: float = 0.5) -> bool:
     return False
 
 
-def cotes_visibles(p: Placement, autres: list[Placement], precision: float = TOL_VISIBLE) -> tuple[str, ...]:
-    """Côtés du couloir depuis lesquels le colis ``p`` reste visible : ``"gauche"`` (x minimal) et/ou ``"droite"``
-    (x maximal).
+def _bornes(p: Placement, axe: str) -> tuple[float, float, float, float]:
+    """(début, fin) du colis sur l'axe des côtés puis sur l'autre axe horizontal."""
+    if axe == "x":
+        return p.x, p.x2, p.y, p.y2
+    return p.y, p.y2, p.x, p.x2
 
-    Règle du notebook CDP_3, appliquée sur l'axe du couloir (x) : un autre colis ne masque ``p`` que si leurs
-    projections se chevauchent à la fois selon y et selon z ; il masque alors le côté vers lequel il dépasse de ``p``
-    selon x. Un colis côte à côte en y, ou à un autre niveau en z, ne masque rien.
+
+def cotes_visibles(p: Placement, autres: list[Placement], axe: str = "y",
+                   precision: float = TOL_VISIBLE) -> tuple[str, ...]:
+    """Côtés depuis lesquels le colis ``p`` reste visible : ``"gauche"`` (coordonnée minimale sur ``axe``) et/ou
+    ``"droite"`` (coordonnée maximale).
+
+    Règle du notebook CDP_4 (``cotes_accessibles_iata``, sur l'axe y par défaut) : un autre colis ne masque ``p``
+    que si leurs projections se chevauchent à la fois selon l'autre axe horizontal et selon z ; il masque alors le
+    côté vers lequel il dépasse de ``p`` sur l'axe des côtés. Un colis côte à côte sur l'autre axe, ou à un autre
+    niveau en z, ne masque rien.
     """
     gauche = droite = True
+    s1, s2, t1, t2 = _bornes(p, axe)
     for q in autres:
         if q is p:
             continue
-        if min(p.y2, q.y2) - max(p.y, q.y) > precision and min(p.z2, q.z2) - max(p.z, q.z) > precision:
-            if q.x < p.x - precision:
+        q1, q2, u1, u2 = _bornes(q, axe)
+        if min(t2, u2) - max(t1, u1) > precision and min(p.z2, q.z2) - max(p.z, q.z) > precision:
+            if q1 < s1 - precision:
                 gauche = False
-            if q.x2 > p.x2 + precision:
+            if q2 > s2 + precision:
                 droite = False
     return tuple(cote for cote, libre in (("gauche", gauche), ("droite", droite)) if libre)
 
 
-def cotes_bord(p: Placement, largeur_utile: float, jeu: float) -> tuple[str, ...]:
-    """Côtés du couloir contre lesquels le colis est posé (à ``jeu`` cm près) : « gauche » en x = 0, « droite » en
-    x = largeur utile. Vide si le colis n'est contre aucun bord."""
+def cotes_bord(p: Placement, etendue: float, jeu: float, axe: str = "y") -> tuple[str, ...]:
+    """Côtés contre lesquels le colis est posé (à ``jeu`` cm près) : « gauche » en 0 sur ``axe``, « droite » à
+    ``etendue`` (étendue utile sur cet axe). Vide si le colis n'est contre aucun bord."""
+    s1, s2, _, _ = _bornes(p, axe)
     cotes = []
-    if p.x <= jeu:
+    if s1 <= jeu:
         cotes.append("gauche")
-    if p.x2 >= largeur_utile - jeu:
+    if s2 >= etendue - jeu:
         cotes.append("droite")
     return tuple(cotes)
 
 
-def iata_en_regle(p: Placement, autres: list[Placement], largeur_utile: float, params: Parametres) -> bool:
+def iata_en_regle(p: Placement, autres: list[Placement], etendue: float, params: Parametres,
+                  axe: str = "y") -> bool:
     """Un colis dangereux est visible d'au moins un côté ; avec ``iata_au_bord`` il est de plus posé contre un bord et
     visible depuis ce bord-là."""
-    visibles = cotes_visibles(p, autres)
+    visibles = cotes_visibles(p, autres, axe)
     if not visibles:
         return False
     if params.iata_au_bord:
-        return any(c in visibles for c in cotes_bord(p, largeur_utile, params.jeu_contact))
+        return any(c in visibles for c in cotes_bord(p, etendue, params.jeu_contact, axe))
     return True
 
 
