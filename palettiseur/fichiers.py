@@ -9,7 +9,8 @@ from datetime import datetime
 
 from .modeles import Colis, Resultat
 
-COLONNES_CSV = ["numero", "longueur", "largeur", "hauteur", "masse", "classe", "fragile", "emballage", "reference", "commentaire"]
+COLONNES_CSV = ["numero", "longueur", "largeur", "hauteur", "masse", "classe", "fragile", "emballage", "reference", "dat",
+                "commentaire"]
 
 # Noms de colonnes acceptés à l'import (minuscules, sans accents)
 ALIAS = {
@@ -22,6 +23,7 @@ ALIAS = {
     "fragile": ["fragile"],
     "emballage": ["emballage", "matiere", "matiere d'emballage", "packing", "type of packing", "materiau"],
     "reference": ["reference", "serie", "numero de serie", "serial", "sscc"],
+    "dat": ["dat", "n dat", "numero dat", "cargo nat ref 1"],
     "commentaire": ["commentaire", "comment", "description", "libelle", "libellé", "contenu", "remarque"],
 }
 
@@ -90,7 +92,7 @@ def ecrire_csv(colis: list[Colis]) -> str:
     w.writerow(COLONNES_CSV)
     for c in colis:
         w.writerow([c.numero, c.longueur, c.largeur, c.hauteur, c.masse, c.classe, "oui" if c.fragile else "non",
-                    c.emballage, c.reference, c.commentaire])
+                    c.emballage, c.reference, c.dat, c.commentaire])
     return sortie.getvalue()
 
 
@@ -99,16 +101,16 @@ def plan_csv(resultat: Resultat) -> str:
     sortie = io.StringIO()
     w = csv.writer(sortie, delimiter=";", lineterminator="\n")
     w.writerow(["palette", "type_palette", "zone", "numero_colis", "classe", "masse_kg", "x_cm", "y_cm", "z_cm",
-                "dim_x_cm", "dim_y_cm", "dim_z_cm", "fragile", "emballage", "reference", "commentaire"])
+                "dim_x_cm", "dim_y_cm", "dim_z_cm", "fragile", "emballage", "reference", "dat", "commentaire"])
     for pal in resultat.palettes:
         for p in sorted(pal.placements, key=lambda p: (p.z, p.y, p.x)):
             c = p.colis
             w.writerow([pal.numero, pal.type.code, pal.zone, c.numero, c.classe, c.masse,
                         round(p.x, 1), round(p.y, 1), round(p.z, 1), p.dx, p.dy, p.dz,
-                        "oui" if c.fragile else "non", c.emballage, c.reference, c.commentaire])
+                        "oui" if c.fragile else "non", c.emballage, c.reference, c.dat, c.commentaire])
     for c, motif in resultat.non_places:
         w.writerow(["", "", "NON PLACÉ", c.numero, c.classe, c.masse, "", "", "", c.longueur, c.largeur, c.hauteur,
-                    "oui" if c.fragile else "non", c.emballage, c.reference, motif])
+                    "oui" if c.fragile else "non", c.emballage, c.reference, c.dat, motif])
     return sortie.getvalue()
 
 

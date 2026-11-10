@@ -44,6 +44,7 @@ class Colis:
     fragile: bool = False     # rien ne doit être posé dessus
     emballage: str = ""       # code de matière d'emballage (voir emballages.py), "" = non précisée
     reference: str = ""       # numéro de série complet (manifeste), affiché dans le détail du colis
+    dat: str = ""             # numéro de DAT complet (« Cargo Nat Ref 1 ») : les colis d'un même DAT voyagent ensemble
 
     # ---- propriétés dérivées -------------------------------------------------
     @property
@@ -95,6 +96,7 @@ class Colis:
             fragile=booleen("fragile", False),
             emballage=emballages().code_depuis_texte(d.get("emballage", "")),
             reference=str(d.get("reference", "") or "").strip(),
+            dat=str(d.get("dat", d.get("DAT", "")) or "").strip(),
         )
 
     def vers_dict(self) -> dict[str, Any]:
@@ -282,7 +284,7 @@ class Parametres:
     capacite_avion: float = 30000.0      # kg, charge marchande approximative
 
     # Règles de confection
-    support_minimal: float = 0.90        # part de la base qui doit reposer sur quelque chose
+    support_minimal: float = 0.80        # part de la base qui doit reposer sur quelque chose (``support_minimal`` du notebook)
     facteur_masse: float = 1.0           # un colis posé doit avoir masse <= facteur x masse du support
     iata_au_bord: bool = True            # colis IATA contre un bord côté couloir (en plus de la règle de visibilité)
     emballages_ecrasables: str = field(default_factory=lambda: ",".join(emballages().codes_ecrasables()))
@@ -291,11 +293,12 @@ class Parametres:
     jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
 
     # Algorithme
-    mode_notebook: bool = False          # True : reproduit le notebook à la lettre (4 ordres en phase 1, transferts sans rotation)
-    duree_recherche: float = 4.0         # secondes, budget total de l'heuristique (phases 1, 3 et 5)
-    temps_limite_scip: float = 60.0      # secondes par étape SCIP (notebook : temps_limite)
+    moteur: str = "notebook"             # "notebook" : code de CDP_5 ; "heuristique" : moteur rapide de l'application
+    regrouper_par_dat: bool = True       # ``regrouper_par_DAT`` du notebook : un DAT sans conflit reste sur une palette
+    marge_hauteur: float = 5.0           # cm : écart maximal de base du cinquième essai de l'heuristique (``marge_hauteur``)
+    temps_limite: float = 60.0           # secondes : budget commun de la VND (``temps_limite`` du notebook, 180 s)
+    duree_recherche: float = 4.0         # secondes : budget du moteur de l'application (hors notebook)
     graine: int = 0
-    moteur: str = "heuristique"          # "heuristique" ou "scip"
 
     def emballage_ecrasable(self, code: str) -> bool:
         """Le colis dans cette matière d'emballage ne doit-il pas être écrasé ?"""
@@ -381,9 +384,9 @@ class Parametres:
 
 @dataclass
 class Etape:
-    """État intermédiaire du plan (phase 1 heuristique, phase 2 SCIP, solution finale)."""
+    """État intermédiaire du plan (phase 1 heuristique, phase 2 après la VND, solution finale)."""
 
-    cle: str                  # "heuristique", "scip" ou "finale"
+    cle: str                  # "heuristique", "apres_vnd" ou "finale"
     titre: str
     description: str
     palettes: list[Palette]

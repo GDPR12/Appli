@@ -35,15 +35,13 @@ def configuration() -> dict:
 
 
 def moteurs_disponibles() -> list[dict]:
-    liste = [{"code": "heuristique", "libelle": "Heuristique + fusion + tassement (rapide)", "disponible": True}]
-    try:
-        from . import moteur_scip
-        dispo, detail = moteur_scip.disponible()
-    except Exception as e:  # pragma: no cover - dépend de l'installation
-        dispo, detail = False, str(e)
-    liste.append({"code": "scip", "libelle": "Heuristique + SCIP (pipeline du notebook CDP)",
-                  "disponible": dispo, "detail": detail})
-    return liste
+    return [
+        {"code": "notebook", "libelle": "Code du notebook CDP_5 (heuristique + VND)", "disponible": True,
+         "detail": "Cinq essais, VND, recentrage et tassement horizontal : le code du notebook, avec les règles de "
+                   "l'application."},
+        {"code": "heuristique", "libelle": "Moteur rapide de l'application", "disponible": True,
+         "detail": "Réimplémentation rapide (quelques secondes) ; sert aussi de relais pour les BIPAL / TRIPAL."},
+    ]
 
 
 EXEMPLES = [
@@ -51,8 +49,8 @@ EXEMPLES = [
      "description": "Le manifeste CARGO.xlsx importé : numéros de série, 14 armes, 10 pièces de sécurité, 5 matières "
                     "dangereuses (classes 9, 3 et 2.2), emballages (28 cartons)."},
     {"cle": "cdp", "titre": "CDP – 54 colis du notebook",
-     "description": "Les 54 colis du notebook CDP_4 (numérotés 1 à 54) avec ses paramètres et son code : 2 palettes de 218 et 141 cm "
-                    "attendues, comme dans le notebook (environ 40 s de calcul)."},
+     "description": "Les 54 colis du notebook CDP_5 (numéros à 4 chiffres, DAT, catégories A et B) avec ses paramètres et son "
+                    "code : 3 palettes après l'heuristique, 2 après la VND (environ 45 s de calcul)."},
     {"cle": "iata", "titre": "Mixte – matières dangereuses, armement et BIPAL",
      "description": "Liste variée : classes IATA incompatibles, armement, fragiles, cartons et un colis de 3 m."},
 ]
@@ -79,7 +77,7 @@ def _palettes_dict(palettes, params: Parametres) -> list[dict]:
     for pal in palettes:
         d = pal.vers_dict(params.tare_palette, params.largeur_palette, params.longueur_palette * pal.type.positions)
         for placement, dict_placement in zip(pal.placements, d["placements"]):
-            if classe_de(placement.colis.classe).iata:
+            if classe_de(placement.colis.classe).visible:
                 # côtés d'où l'étiquette est visible, et bord contre lequel le colis est posé (sur l'axe des côtés)
                 axe = pal.type.axe_cotes
                 dict_placement["acces_iata"] = list(cotes_visibles(placement, pal.placements, axe))

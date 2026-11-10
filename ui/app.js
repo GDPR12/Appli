@@ -11,7 +11,7 @@ const etat = {
   parametres: {},
   resultat: null,        // dernier plan calculé
   paletteCourante: 'ensemble',
-  etape: 'finale',       // étape du pipeline affichée : 'heuristique', 'scip' ou 'finale'
+  etape: 'finale',       // étape du pipeline affichée : 'heuristique', 'apres_vnd' ou 'finale'
   mode: 'categories',
   selection: null,       // {numero, palette}
   edition: null,         // index du colis en cours de modification
@@ -45,14 +45,14 @@ async function api(route, corps) {
 function sauvegarderLocal() {
   try {
     localStorage.setItem('palettiseur.colis', JSON.stringify(etat.colis));
-    localStorage.setItem('palettiseur.parametres.v3', JSON.stringify(etat.parametres));
+    localStorage.setItem('palettiseur.parametres.v4', JSON.stringify(etat.parametres));
   } catch (e) { /* stockage indisponible : on ignore */ }
 }
 function chargerLocal() {
   try {
     const c = localStorage.getItem('palettiseur.colis');
     if (c) etat.colis = JSON.parse(c).map(({ renversable, ...reste }) => reste);
-    const p = localStorage.getItem('palettiseur.parametres.v3');
+    const p = localStorage.getItem('palettiseur.parametres.v4');
     if (p) etat.parametres = { ...etat.parametres, ...JSON.parse(p) };
   } catch (e) { /* ignore */ }
 }
@@ -96,6 +96,7 @@ function reinitialiserFormulaire() {
   $('#formulaire-colis').reset();
   $('#f-numero').value = numeroSuivant();
   $('#f-quantite').value = 1;
+  $('#f-dat').value = '';
   $('#f-emballage').value = '';
   $('#erreur-formulaire').hidden = true;
   majAideClasse();
@@ -111,6 +112,7 @@ function lireFormulaire() {
     emballage: $('#f-emballage').value,
     classe: $('#f-classe').value,
     commentaire: $('#f-commentaire').value.trim(),
+    dat: $('#f-dat').value.trim(),
     reference: etat.edition !== null ? (etat.colis[etat.edition].reference || '') : '',
     quantite: Math.max(1, parseInt($('#f-quantite').value || '1', 10)),
   };
@@ -133,6 +135,7 @@ function remplirFormulaire(c) {
   $('#f-fragile').checked = !!c.fragile;
   $('#f-classe').value = c.classe || '';
   $('#f-commentaire').value = c.commentaire || '';
+  $('#f-dat').value = c.dat || '';
   $('#f-quantite').value = c.quantite || 1;
   majAideClasse();
 }
@@ -181,7 +184,7 @@ function afficherListe() {
     const pals = palettesDuColis(c);
     const palTxt = pals.length ? [...new Set(pals)].map((p) => (p === '—' ? '<span class="danger">non placé</span>' : `P${p}`)).join(', ') : '';
     tr.innerHTML = `
-      <td><span class="num">${echapper(c.numero)}</span>${q > 1 ? `<span class="qte" title="Quantité">×${q}</span>` : ''}${c.commentaire ? `<span class="commentaire">${echapper(c.commentaire)}</span>` : ''}</td>
+      <td><span class="num">${echapper(c.numero)}</span>${q > 1 ? `<span class="qte" title="Quantité">×${q}</span>` : ''}${c.dat ? `<span class="commentaire" title="DAT">${echapper(c.dat)}</span>` : ''}${c.commentaire ? `<span class="commentaire">${echapper(c.commentaire)}</span>` : ''}</td>
       <td>${nombre(c.longueur, 1)}×${nombre(c.largeur, 1)}×${nombre(c.hauteur, 1)}</td>
       <td>${nombre(c.masse, 1)}</td>
       <td title="${echapper(libelleEmballage(c.emballage))}">${echapper(libelleEmballageCourt(c.emballage))}${c.fragile ? ' <span title="Fragile : rien dessus">🥚</span>' : ''}</td>
@@ -233,7 +236,6 @@ function ouvrirParametres() {
   majAidePassagers();
   majAideMoteur();
   majAideLargeurUtile();
-  majAideModeNotebook();
   $('#dlg-parametres').showModal();
 }
 function lireParametres() {
@@ -257,12 +259,6 @@ function majAideLargeurUtile() {
     ? `Zone utile : ${nombre(ux)} × ${nombre(uy)} cm (x × y), sans couloir.`
     : `Zone utile : ${nombre(ux)} × ${nombre(uy)} cm (x × y) : couloir de ${nombre(val('reduction_couloir'))} cm de chaque côté, sur l'axe ${axe}.`;
 }
-function majAideModeNotebook() {
-  const actif = $('[data-param=mode_notebook]').checked;
-  $('#aide-mode-notebook').textContent = actif
-    ? 'Les phases 1, 3, 4 et 5 sont exécutées par le code du notebook : mêmes quatre ordres, mêmes transferts, mêmes tassements. Comme dans le notebook, la phase 4 emploie tout le « Temps SCIP par étape » si elle ne trouve rien à abaisser. Indisponible avec BIPAL / TRIPAL ou au-delà de 150 colis (le moteur de l\'application prend alors le relais).'
-    : '';
-}
 function majAidePassagers() {
   const pax = parseInt($('[data-param=passagers]').value || '0', 10);
   let positions = 0;
@@ -273,9 +269,9 @@ function majAidePassagers() {
 function majAideMoteur() {
   const code = $('#select-moteur').value;
   const m = etat.config.moteurs.find((x) => x.code === code);
-  $('#aide-moteur').textContent = !m ? '' : m.code === 'scip'
-    ? 'Pipeline du notebook CDP : l\'heuristique sert d\'amorce à SCIP (réduction du nombre d\'emplacements) puis fusion, tassement vertical et horizontal sans solveur. Plusieurs minutes possibles ; réservé aux listes de moins de 60 colis.'
-    : 'Cinq phases sans solveur : multi-départ, fusion des palettes, tassement vertical, recentrage et tassement horizontal. Quelques secondes.';
+  $('#aide-moteur').textContent = !m ? '' : m.code === 'notebook'
+    ? 'Le code de CDP_5 exécuté tel quel : cinq essais d\'heuristique, puis la VND (transferts, replacements, échanges) pendant le budget indiqué, puis recentrage et tassement horizontal, avec un contrôle indépendant après chaque phase. Plus lent (le notebook n\'est pas optimisé). Indisponible avec BIPAL / TRIPAL ou au-delà de 150 colis : le moteur rapide prend alors le relais.'
+    : 'Réimplémentation rapide de l\'application : heuristique multi-départ, fusion, tassement vertical, recentrage et tassement horizontal. Quelques secondes ; pas de regroupement par DAT.';
 }
 function remplirSelectMoteur() {
   const sel = $('#select-moteur');
@@ -358,7 +354,7 @@ function afficherJournal() {
   ol.innerHTML = '';
   carte.hidden = !res || !(res.journal && res.journal.length);
   if (carte.hidden) return;
-  const cibles = { 1: 'heuristique', 2: 'scip', 5: 'finale' };
+  const cibles = { 1: 'heuristique', 2: 'apres_vnd', 4: 'finale' };
   for (const j of res.journal) {
     const li = document.createElement('li');
     li.className = j.ignoree ? 'ignoree' : '';
@@ -449,7 +445,7 @@ function afficherBilan() {
     ligne('Charge totale', `${nombre(b.masse_totale_brute)} / ${nombre(b.capacite_avion)} kg`, masseOk ? 'bon' : 'mauvais'),
     ligne('Hauteur globale', `${nombre(b.hauteur_globale)} cm`),
     ligne('Somme des hauteurs', `${nombre(b.somme_hauteurs)} cm`),
-    ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${{ scip: 'SCIP', notebook: 'code du notebook' }[res.moteur] || 'heuristique'}`),
+    ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${res.moteur === 'notebook' ? 'code du notebook CDP_5' : 'moteur rapide'}`),
   ].join('');
   $('#boutons-export').hidden = false;
   $('#info-export').hidden = true;
@@ -518,6 +514,7 @@ function afficherInfoColis(placement, palette) {
     <dt>Classe</dt><dd>${chipClasse(c.classe)} ${echapper(libelleClasse(c.classe))}${iataTxt}</dd>
     <dt>Emballage</dt><dd>${echapper(libelleEmballage(c.emballage))}${etat.resultat.parametres.emballages_ecrasables.split(',').includes(c.emballage) && c.emballage ? ' · <strong>ne pas écraser</strong>' : ''}${c.fragile ? ' · <strong>fragile</strong>' : ''}</dd>
     ${c.reference ? `<dt>N° de série</dt><dd>${echapper(c.reference)}</dd>` : ''}
+    ${c.dat ? `<dt>DAT</dt><dd>${echapper(c.dat)}</dd>` : ''}
     <dt>Position</dt><dd>x = ${nombre(placement.x, 1)}, y = ${nombre(placement.y, 1)}, z = ${nombre(placement.z, 1)} cm (coin) · sommet à ${nombre(placement.z + placement.dz, 1)} cm</dd>
     <dt>Repose sur</dt><dd>${placement.z <= 0.5 ? 'la palette' : (v.dessous.length ? v.dessous.join(', ') : '—')} · support ${Math.round(v.support * 100)} %</dd>
     <dt>Porte</dt><dd>${v.dessus.length ? v.dessus.join(', ') : 'rien'}</dd>
@@ -650,12 +647,12 @@ async function exporter(format, extra = {}) {
 }
 function planCsv() {
   const res = donnees();
-  const lignes = [['palette', 'type_palette', 'zone', 'numero_colis', 'classe', 'masse_kg', 'x_cm', 'y_cm', 'z_cm', 'dim_x_cm', 'dim_y_cm', 'dim_z_cm', 'emballage', 'fragile', 'reference', 'commentaire']];
+  const lignes = [['palette', 'type_palette', 'zone', 'numero_colis', 'classe', 'masse_kg', 'x_cm', 'y_cm', 'z_cm', 'dim_x_cm', 'dim_y_cm', 'dim_z_cm', 'emballage', 'fragile', 'reference', 'dat', 'commentaire']];
   for (const pal of res.palettes) {
     const tri = [...pal.placements].sort((a, b) => a.z - b.z || a.y - b.y || a.x - b.x);
-    for (const p of tri) lignes.push([pal.numero, pal.type, pal.zone, p.colis.numero, p.colis.classe, p.colis.masse, p.x, p.y, p.z, p.dx, p.dy, p.dz, p.colis.emballage || '', p.colis.fragile ? 'oui' : 'non', p.colis.reference || '', p.colis.commentaire]);
+    for (const p of tri) lignes.push([pal.numero, pal.type, pal.zone, p.colis.numero, p.colis.classe, p.colis.masse, p.x, p.y, p.z, p.dx, p.dy, p.dz, p.colis.emballage || '', p.colis.fragile ? 'oui' : 'non', p.colis.reference || '', p.colis.dat || '', p.colis.commentaire]);
   }
-  for (const n of res.non_places) lignes.push(['', '', 'NON PLACÉ', n.colis.numero, n.colis.classe, n.colis.masse, '', '', '', n.colis.longueur, n.colis.largeur, n.colis.hauteur, n.colis.emballage || '', n.colis.fragile ? 'oui' : 'non', n.colis.reference || '', n.motif]);
+  for (const n of res.non_places) lignes.push(['', '', 'NON PLACÉ', n.colis.numero, n.colis.classe, n.colis.masse, '', '', '', n.colis.longueur, n.colis.largeur, n.colis.hauteur, n.colis.emballage || '', n.colis.fragile ? 'oui' : 'non', n.colis.reference || '', n.colis.dat || '', n.motif]);
   return lignes.map((l) => l.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
 }
 
@@ -737,7 +734,7 @@ async function initialiser() {
     selEmb.appendChild(o);
   }
   remplirSelectMoteur();
-  if (!etat.config.moteurs.find((m) => m.code === etat.parametres.moteur && m.disponible)) etat.parametres.moteur = 'heuristique';
+  if (!etat.config.moteurs.find((m) => m.code === etat.parametres.moteur && m.disponible)) etat.parametres.moteur = 'notebook';
 
   vue = new Vue3D($('#vue3d'), {
     surSelection: (placement, palette) => {
@@ -781,7 +778,7 @@ async function initialiser() {
     if (!nom) return;
     if (etat.colis.length && !confirm('Remplacer la liste actuelle par cet exemple ?')) return;
     const rep = await api('/api/exemple?nom=' + encodeURIComponent(nom));
-    const garde = { moteur: etat.parametres.moteur, duree_recherche: etat.parametres.duree_recherche, temps_limite_scip: etat.parametres.temps_limite_scip };
+    const garde = { moteur: etat.parametres.moteur, duree_recherche: etat.parametres.duree_recherche, temps_limite: etat.parametres.temps_limite };
     etat.parametres = { ...etat.config.parametres, ...garde, ...(rep.parametres || {}) };
     etat.colis = rep.colis; sauvegarderLocal(); afficherListe(); reinitialiserFormulaire();
     notifier(`${rep.titre} : ${rep.colis.length} ligne(s) chargée(s)` + (rep.parametres ? ' avec les paramètres du notebook' : '')
@@ -807,7 +804,6 @@ async function initialiser() {
   $('#btn-params-defaut').addEventListener('click', () => { etat.parametres = { ...etat.config.parametres }; ouvrirParametres(); });
   $('[data-param=passagers]').addEventListener('input', majAidePassagers);
   for (const k of ['largeur_palette', 'longueur_palette', 'reduction_couloir', 'derogation_couloir', 'axe_cotes']) $(`[data-param=${k}]`).addEventListener('input', majAideLargeurUtile);
-  $('[data-param=mode_notebook]').addEventListener('input', majAideModeNotebook);
   $('#select-moteur').addEventListener('change', majAideMoteur);
   $('#form-parametres').addEventListener('submit', (e) => {
     e.preventDefault();

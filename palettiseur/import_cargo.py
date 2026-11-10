@@ -2,15 +2,17 @@
 
 Colonnes lues (par leur en-tête, dans l'ordre que l'on veut) : ``Class/Div``, ``Type of Packing``,
 ``Proper Shipping Name``, ``Weight (Kg)``, ``Length (cm)``, ``Width (cm)``, ``Height (cm)``, ``UN/ID No``,
-``Sub Haz``, ``Quantity`` et la **dernière colonne** (numéro de série). Les autres colonnes, dont la température
-mentionnée dans les désignations, sont ignorées.
+``Sub Haz``, ``Quantity``, ``Cargo Nat Ref 1`` (DAT) et la **dernière colonne** (numéro de série). Les autres
+colonnes, dont la température mentionnée dans les désignations, sont ignorées.
 
 Pour chaque ligne :
 
 - **numéro du colis** : les 4 derniers chiffres du numéro de série (dernière colonne) ; le numéro complet est
   conservé dans le champ « référence » ;
-- **classe** : la classe IATA de ``Class/Div`` ; à défaut, ``ARME`` ou ``SECU`` reconnus dans la désignation
-  (règles de ``data/import_cargo.json``) ;
+- **DAT** : la chaîne complète de ``Cargo Nat Ref 1``, sans troncature : les colis d'un même DAT voyagent ensemble
+  (regroupement par DAT du notebook CDP_5) ;
+- **classe** : la classe IATA de ``Class/Div`` ; à défaut, ``ARME`` (catégorie A du notebook, ``WEAPONS``) ou ``SECU``
+  (catégorie B, ``WEAPONRY SECURITY PARTS``) reconnus dans la désignation (règles de ``data/import_cargo.json``) ;
 - **emballage** : la matière déduite de ``Type of Packing`` (carton, bois…), pour ne pas écraser les cartons ;
 - **fragile** : jamais déduit du fichier (à cocher ensuite dans la liste) ;
 - **sens** : la hauteur reste toujours verticale (le manifeste n'indique pas de notion de renversement).
@@ -40,6 +42,7 @@ EN_TETES = {
     "onu": ["un id no", "un id", "n onu", "numero onu", "onu"],
     "sous_risque": ["sub haz", "risque subsidiaire"],
     "quantite": ["quantity", "quantite"],
+    "dat": ["cargo nat ref 1", "dat", "n dat", "numero dat"],
 }
 OBLIGATOIRES = ("masse", "longueur", "largeur", "hauteur", "designation")
 CHIFFRES_SERIE = 4
@@ -211,9 +214,10 @@ def lire_manifeste(contenu: bytes) -> dict:
             morceaux.append(f"risque subsidiaire {sous_risque}")
         if emballage_brut:
             morceaux.append(emballage_brut)
+        dat = _texte(ligne[col["dat"]]) if "dat" in col else ""
         colis.append({
             "numero": numero, "longueur": dims[0], "largeur": dims[1], "hauteur": dims[2], "masse": masse,
-            "classe": classe, "fragile": False, "emballage": emballage, "reference": serie,
+            "classe": classe, "fragile": False, "emballage": emballage, "reference": serie, "dat": dat,
             "commentaire": " · ".join(morceaux), "quantite": quantite,
         })
 
@@ -224,6 +228,7 @@ def lire_manifeste(contenu: bytes) -> dict:
         "dangereux": sum(1 for c in colis if c["classe"] and c["classe"] not in ("ARME", "SECU")),
         "carton": sum(1 for c in colis if c["emballage"] == "carton"),
         "fibre": sum(1 for c in colis if c["emballage"] == "fibre"),
+        "dat": len({c["dat"] for c in colis if c["dat"]}),
         "lignes_ignorees": sum(1 for a in avertissements if "ignorée" in a),
     }
     return {"colis": colis, "avertissements": avertissements, "resume": resume}

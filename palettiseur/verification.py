@@ -12,6 +12,7 @@ from dataclasses import dataclass, asdict
 from itertools import combinations
 
 from . import avion
+from .dat import partition as dat_partition
 from .emballages import emballages
 from .geometrie import cotes_bord, cotes_visibles, en_contact, orientations, se_chevauchent, supports, taux_support
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
@@ -70,14 +71,15 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
                                     f"{q.colis.numero} ({emballages().libelle(q.colis.emballage)}), qui ne doit pas être "
                                     f"écrasé (charge maximale {params.charge_max_carton:g} kg).",
                                     n, [c.numero, q.colis.numero]))
-        # Colis IATA : posé contre un bord et visible depuis ce côté (règle du notebook CDP_4 sur l'axe des côtés)
-        if classe_de(c.classe).iata:
+        # Colis à étiquette (classes IATA, armes A, pièces de sécurité B) : visible depuis un côté (règle du notebook
+        # sur l'axe des côtés) ; les vraies classes IATA sont de plus posées contre ce bord.
+        if classe_de(c.classe).visible:
             axe = pal.type.axe_cotes
             visibles = cotes_visibles(p, pls, axe)
             if not visibles:
                 msgs.append(Message("erreur", "iata_acces", f"Colis {c.numero} (étiquette {c.classe}) est masqué des "
                                     "deux côtés par d'autres colis : étiquette non visible.", n, [c.numero]))
-            elif params.iata_au_bord and not any(
+            elif params.iata_au_bord and classe_de(c.classe).iata and not any(
                     cote in visibles for cote in cotes_bord(p, pal.type.etendue_cotes, jeu, axe)):
                 msgs.append(Message("erreur", "iata_bord", f"Colis {c.numero} (étiquette {c.classe}) n'est pas posé "
                                     "contre un bord du couloir : étiquette non accessible.", n, [c.numero]))
@@ -126,6 +128,28 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
     return msgs
 
 
+def _verifier_dat(resultat: Resultat, params: Parametres, regles: ReglesSeparation) -> list[Message]:
+    """Regroupement par DAT (notebook CDP_5) : un sous-groupe compatible d'un DAT reste sur une seule palette."""
+    if not params.regrouper_par_dat:
+        return []
+    placements = [(pal.numero, pl.colis) for pal in resultat.palettes for pl in pal.placements]
+    cles = dat_partition([c for _, c in placements], regles, True)
+    destinations: dict[tuple, dict[int, list[str]]] = {}
+    for numero, c in placements:
+        cle = cles[id(c)]
+        if cle[0] == "DAT":
+            destinations.setdefault(cle, {}).setdefault(numero, []).append(c.numero)
+    msgs = []
+    for cle, par_palette in destinations.items():
+        if len(par_palette) > 1:
+            colis = [numero for liste in par_palette.values() for numero in liste]
+            msgs.append(Message("avertissement", "dat_reparti",
+                                f"DAT {cle[1]} : réparti sur les palettes {', '.join(map(str, sorted(par_palette)))} alors "
+                                "que le regroupement par DAT est demandé (le moteur rapide de l'application ne le "
+                                "garantit pas).", None, colis))
+    return msgs
+
+
 def verifier(resultat: Resultat, regles: ReglesSeparation | None = None) -> list[Message]:
     regles = regles or regles_par_defaut()
     params = resultat.parametres
@@ -134,6 +158,7 @@ def verifier(resultat: Resultat, regles: ReglesSeparation | None = None) -> list
         msgs.extend(verifier_palette(pal, params, regles))
     for c, motif in resultat.non_places:
         msgs.append(Message("erreur", "non_place", f"Colis {c.numero} non palettisé : {motif}.", None, [c.numero]))
+    msgs.extend(_verifier_dat(resultat, params, regles))
 
     # Contraintes de l'avion
     bilan = avion.bilan(resultat)

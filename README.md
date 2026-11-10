@@ -4,12 +4,13 @@ Application Windows (Python + interface web locale) qui aide les agents du trans
 **confectionner les palettes 10k d'un A400M** : saisie des colis, répartition automatique sur le minimum de
 palettes en respectant les contraintes du projet, visualisation 3D interactive, fiches palette imprimables.
 
-Le moteur de calcul suit le **pipeline du notebook `CDP_4`** (heuristique → SCIP → fusion → tassement vertical →
-recentrage et tassement horizontal) auquel s'ajoutent les règles propres à l'application (colis lourds/légers,
-fragiles, emballages en carton à ne pas écraser, armement, BIPAL…). Le **mode notebook** exécute le code du notebook
-lui-même et retrouve ses résultats à l'identique. Une palette fait **274 cm sur l'axe x et 224 cm sur l'axe y** comme
-dans le notebook (`L = 2,74` et `W = 2,24`), avec **14 cm de couloir de chaque côté sur l'axe des côtés** (l'axe y du
-notebook, réglable) ; les colis dangereux sont posés **contre l'un de ces deux bords**. Un **manifeste Excel** (format
+Le moteur de calcul est celui du **notebook `CDP_5`**, dont le code est repris tel quel : heuristique à cinq essais,
+**VND** (transferts entre palettes, replacements plus bas, échanges), recentrage et tassement horizontal, avec un
+contrôle indépendant après chaque phase. S'y ajoutent les règles propres à l'application (colis lourds/légers,
+fragiles, emballages en carton à ne pas écraser, colis IATA contre un bord, BIPAL…). Les colis d'un même **DAT**
+voyagent ensemble, les armes et pièces de sécurité sont les catégories **A** et **B** du notebook, et SCIP a disparu,
+comme dans le notebook. Une palette fait **274 cm sur l'axe x et 224 cm sur l'axe y** (`L = 2,74` et `W = 2,24`), avec
+**14 cm de couloir de chaque côté sur l'axe des côtés** (l'axe y du notebook, réglable). Un **manifeste Excel** (format
 `CARGO.xlsx`) s'importe directement.
 
 ![Vue d'ensemble](docs/captures/vue_ensemble.png)
@@ -20,8 +21,8 @@ notebook, réglable) ; les colis dangereux sont posés **contre l'un de ces deux
 2. [Installation et lancement](#installation-et-lancement)
 3. [Utilisation](#utilisation)
 4. [Règles et contraintes prises en compte](#règles-et-contraintes-prises-en-compte)
-5. [Le pipeline en cinq phases](#le-pipeline-en-cinq-phases)
-6. [Correspondance avec le notebook CDP_4](#correspondance-avec-le-notebook-cdp_4)
+5. [Le pipeline du notebook CDP_5](#le-pipeline-du-notebook-cdp_5)
+6. [Correspondance avec le notebook CDP_5](#correspondance-avec-le-notebook-cdp_5)
 7. [Architecture du code](#architecture-du-code)
 8. [Tests](#tests)
 9. [Limites et pistes d'amélioration](#limites-et-pistes-damélioration)
@@ -35,11 +36,11 @@ notebook, réglable) ; les colis dangereux sont posés **contre l'un de ces deux
 | Saisie simple d'un colis | Formulaire : numéro, longueur / largeur / hauteur (cm), masse (kg), menu déroulant **Colis spécial** (classes IATA : explosifs, carburant, gaz, comburants, corrosifs, radioactifs… + armement), **matière d'emballage**, case **Fragile**, commentaire libre (vide par défaut), quantité. Plus de case « renversable » : un colis garde toujours sa hauteur à la verticale. |
 | Import d'un manifeste Excel | Bouton **Importer…** (un seul pour tous les formats, reconnus à l'extension puis au contenu) : lit un fichier `.xlsx` au format `CARGO.xlsx` (voir [Import Excel](#import-dun-manifeste-excel)) : armes et pièces de sécurité reconnues dans la désignation, numéro = 4 derniers chiffres de la dernière colonne, matière d'emballage lue, température ignorée. |
 | Import des listes MEAT / SILRIA | Import CSV (séparateur `;` `,` ou tabulation, noms de colonnes reconnus automatiquement) et JSON ; export CSV de la liste. |
-| Répartition des colis | Pipeline en cinq phases du notebook CDP_4 : minimise les emplacements, abaisse les colis par tassement vertical, puis recentre. Fonctionne **sans solveur** (heuristique, quelques secondes) ou **avec SCIP** (moteur exact facultatif, amorcé par l'heuristique). |
+| Répartition des colis | Pipeline de CDP_5 : cinq essais d'heuristique, VND, recentrage, tassement horizontal (voir [Le pipeline](#le-pipeline-du-notebook-cdp_5)). Le moteur **du notebook** (par défaut) exécute son code tel quel ; il est plus lent. Un **moteur rapide** de l'application (quelques secondes) est proposé et prend le relais pour les BIPAL / TRIPAL. Aucun solveur : SCIP a été retiré, comme dans le notebook. |
 | Colis lourd jamais sur colis léger | Contrainte dure dans toutes les phases : un colis ne repose que sur des colis au moins aussi lourds que lui (facteur paramétrable). |
 | Colis incompatibles | Tableau IATA 9.3.A (éditable dans `data/iata_9_3_A.json`) + séparation arme / pièce de sécurité : jamais sur la même palette ; avertissement « à ne pas charger côte à côte » entre palettes pour le mécanicien navigant. |
-| Colis dangereux sur le bord | Règle de CDP_4 (`cotes_accessibles_iata`) : un colis IATA reste **visible depuis l'un des deux côtés** (les extrémités de l'axe y, comme dans le notebook) ; un autre colis ne le masque que si leurs projections se chevauchent sur l'autre axe et en z et qu'il le dépasse de ce côté. L'application y ajoute qu'il soit **posé contre ce bord**, côté couloir. Contour rouge en 3D, bord et côté d'accès indiqués dans le détail du colis. L'option « Colis IATA posés sur le bord » peut être décochée (visibilité seule), et l'axe des côtés peut être l'axe x dans les paramètres. |
-| Mode notebook | Option des paramètres : les phases 1, 3, 4 et 5 sont exécutées par le **code du notebook CDP_4 repris tel quel** (`palettiseur/notebook_cdp.py`), avec les règles de l'application branchées dessus. Avec les paramètres du notebook, résultat identique (voir [Correspondance](#correspondance-avec-le-notebook-cdp_4)). Plus lent : le notebook n'est pas optimisé. |
+| Colis à étiquette | Règle de CDP_5 (`cotes_accessibles_iata`) : un colis IATA, une arme (catégorie **A**) ou une pièce de sécurité (catégorie **B**) reste **visible depuis l'un des deux côtés** (les extrémités de l'axe y, comme dans le notebook) ; un autre colis ne le masque que si leurs projections se chevauchent sur l'autre axe et en z et qu'il le dépasse de ce côté. Les colis dangereux ont en plus l'obligation (application) d'être **posés contre ce bord**, côté couloir : option « Colis IATA posés sur le bord ». Contour rouge en 3D, bord et côté d'accès dans le détail du colis. |
+| Regroupement par DAT | Les colis d'un même **DAT** (colonne « Cargo Nat Ref 1 » du manifeste) voyagent ensemble : un DAT sans conflit reste sur une palette ; un DAT contenant des classes incompatibles (arme et pièce de sécurité, par exemple) est divisé en sous-groupes compatibles, chacun indivisible. Option « Regrouper les colis d'un même DAT » (`regrouper_par_DAT` du notebook). Si les règles rendent ce regroupement impossible, le moteur le relâche et le signale. |
 | Cartons non écrasés | Un colis dont l'emballage est en carton ou en fibre (« Box, Fibreboard ») ne porte rien par défaut. Le réglage « Charge maximale sur ces matières » autorise une charge limitée, et la liste « Matières à ne pas écraser » se modifie dans les paramètres (voir [Emballages](#emballages-et-cartons)). |
 | Colis fragile | Seule option conservée : rien ne repose sur un colis fragile. |
 | Colis plus grands qu'une palette | Création automatique d'une **BIPAL** (2 palettes accouplées, 2,74 × 4,48 m) ou d'une **TRIPAL** ; au-delà, le colis est signalé « à charger en vrac ». |
@@ -47,9 +48,9 @@ notebook, réglable) ; les colis dangereux sont posés **contre l'un de ces deux
 | Code couleur | Mode **Catégories** : colis ordinaires en gris, une couleur par classe de colis spécial (légende). |
 | Heat map | Mode **Heat map poids** : couleur du colis proportionnelle à sa masse (échelle commune à toutes les palettes). |
 | « Raisonnement des cartes » | Modes **Carte spéciaux** / **Carte tous** : deux colis en contact n'ont jamais la même couleur (coloriage du graphe de contact par l'algorithme DSatur, comme les régions frontalières d'une carte). |
-| Comparer les étapes du calcul | Comme les trois visualisations du notebook (*avant SCIP*, *après SCIP*, *finale*) : un sélecteur d'**étape** affiche en 3D le placement heuristique, le résultat de SCIP et la solution finale. |
-| Journal de calcul | Durée, palettes et somme des hauteurs de chacune des cinq phases, avec le détail (constructions testées, colis transférés, statuts SCIP…). Un clic sur une phase affiche l'état correspondant. |
-| Exemple du notebook | Menu **Exemples…** → « CDP – 54 colis du notebook » (colis dont 5 dangereux, palettes 7 + 2 de 2,54 m de haut et paramètres du notebook) ou un jeu mixte avec matières dangereuses, armement et BIPAL. |
+| Comparer les étapes du calcul | Comme les visualisations du notebook : un sélecteur d'**étape** affiche en 3D le placement heuristique, l'état après la VND et la solution finale. |
+| Journal de calcul | Durée, palettes et somme des hauteurs de chaque phase (heuristique, VND, recentrage, tassement horizontal), avec le détail : les cinq essais, les voisinages de la VND (appels, améliorations, rejets), les contrôles indépendants. Un clic sur une phase affiche l'état correspondant. |
+| Exemple du notebook | Menu **Exemples…** → « CDP – 54 colis du notebook » : les colis et les paramètres de CDP_5 (numéros à 4 chiffres, DAT, catégories A et B, palettes 7 + 2 de 2,54 m de haut) ; « CARGO » (le manifeste Excel avec les règles de l'application) ou un jeu mixte avec matières dangereuses, armement et BIPAL. |
 | Autres éléments issus des documents | Palette de 274 × 224 cm avec 14 cm de couloir de chaque côté de l'axe des côtés, soit 274 × 196 cm utiles (dérogation possible), palettes rampe limitées à 3 t, emplacements selon le nombre de passagers (table « Version A400M »), masse totale avion (fret + tare + passagers 90 kg + bagages 40 kg), fiche palette imprimable avec plan de dessus, vérification indépendante du plan (erreurs / avertissements cliquables), enregistrement du projet. |
 
 ![Sélection d'un colis](docs/captures/palette_selection.png)
@@ -73,17 +74,13 @@ Options : `python main.py --navigateur` ouvre l'interface dans le navigateur par
 
 ### Exécutable Windows autonome
 
-Double-cliquer sur **`build_windows.bat`** (ou `python -m PyInstaller PaletteA400M.spec`). L'exécutable et ses ressources sont produits dans `dist\PaletteA400M\` ; copier ce dossier complet sur le poste cible et lancer `PaletteA400M.exe`. Aucune connexion internet n'est nécessaire (Three.js est embarqué dans `ui/vendor/`). Pour embarquer aussi SCIP, faire `pip install pyscipopt` dans l'environnement avant de construire.
-
-### Moteur SCIP (facultatif)
-
-`pip install pyscipopt` rend disponible le moteur **« Heuristique + SCIP »** dans *Paramètres → Calcul*. Sans ce paquet l'application fonctionne normalement avec le moteur heuristique.
+Double-cliquer sur **`build_windows.bat`** (ou `python -m PyInstaller PaletteA400M.spec`). L'exécutable et ses ressources sont produits dans `dist\PaletteA400M\` ; copier ce dossier complet sur le poste cible et lancer `PaletteA400M.exe`. Aucune connexion internet n'est nécessaire (Three.js est embarqué dans `ui/vendor/`).
 
 ## Utilisation
 
 1. **Saisir les colis** dans le formulaire de gauche (ou *Exemples…*, ou *Importer…* un manifeste Excel `.xlsx`, un CSV ou un projet JSON : le format est reconnu automatiquement). La liste est conservée automatiquement d'une session à l'autre.
-2. **Paramètres** (⚙) : nombre de passagers, dimensions de la palette (274 × 224 cm), axe des côtés, espace de couloir par côté (14 cm), dérogation sans couloir, mode notebook, hauteur maximale, masses limites, règles (support minimal, facteur masse, colis IATA sur le bord, matières à ne pas écraser et charge tolérée dessus), moteur, budget de l'heuristique, temps SCIP par étape.
-3. **Confectionner les palettes** : le plan apparaît en 3D. Onglets : vue d'ensemble / palette par palette. Boutons de mode : *Catégories*, *Carte spéciaux*, *Carte tous*, *Heat map poids*. Barre **Étape du calcul** : *Phase 1 – placement heuristique*, *Phase 2 – après SCIP* (moteur SCIP), *Solution finale*.
+2. **Paramètres** (⚙) : nombre de passagers, dimensions de la palette (274 × 224 cm), axe des côtés, espace de couloir par côté (14 cm), dérogation sans couloir, hauteur maximale, masses limites, règles (support minimal, facteur masse, colis IATA sur le bord, matières à ne pas écraser et charge tolérée dessus), moteur, budget de la VND, marge de hauteur du cinquième essai, regroupement par DAT, support minimal (80 %).
+3. **Confectionner les palettes** : le plan apparaît en 3D. Onglets : vue d'ensemble / palette par palette. Boutons de mode : *Catégories*, *Carte spéciaux*, *Carte tous*, *Heat map poids*. Barre **Étape du calcul** : *Phase 1 – placement heuristique*, *Phase 2 – après la VND*, *Solution finale*.
 4. **Cliquer sur un colis** (dans la vue 3D, dans la liste ou dans un message de vérification) pour ses détails.
 5. **Exports** : *Plan CSV* (une ligne par colis avec palette et position), *Plan JSON*, *Fiche palette* (imprimable, avec plan de dessus et zone de signatures), *Enregistrer* (projet JSON rechargeable). Les fichiers sont écrits dans le dossier `exports/`.
 
@@ -115,6 +112,7 @@ Le fichier est toujours au même format que `CARGO.xlsx` (exemple fourni : `data
 |---|---|---|
 | Numéro du colis | dernière colonne (`Cargo Nat Ref 2`) | **4 derniers chiffres** du numéro de série ; le numéro complet est conservé dans « N° de série ». Deux séries qui finissent pareil donnent `0836` puis `0836-2` (avertissement). |
 | Dimensions, masse | `Length (cm)`, `Width (cm)`, `Height (cm)`, `Weight (Kg)` | Une ligne sans dimensions est ignorée et signalée. Une masse nulle devient 0,1 kg avec un avertissement (sur l'exemple : colis 5725). |
+| DAT | `Cargo Nat Ref 1` | **Chaîne complète**, sans troncature : les colis d'un même DAT voyagent ensemble (regroupement par DAT de CDP_5). |
 | Classe | `Class/Div` | Classe IATA lue telle quelle. Si elle est vide, la désignation (`Proper Shipping Name`) décide : **`SECU`** pour les pièces de sécurité d'armes (`SECURITY PARTS`, `WEAPONRY SECURITY`, « pièce de sécurité »…) et **`ARME`** pour les armes (`WEAPONS`, `WEAPONRY`, « arme », « armement »…). Les pièces de sécurité sont testées d'abord : « WEAPONRY SECURITY PARTS » n'est jamais prise pour une arme. Les mots-clés sont dans `data/import_cargo.json`. |
 | Emballage | `Type of Packing` | `Box, Cardboard` → carton, `Box, Fibreboard` → fibre, `Box, Wood` → bois, etc. (`data/emballages.json`). |
 | Fragile | – | Jamais déduit : à cocher dans la liste. |
@@ -129,7 +127,7 @@ Le lecteur `.xlsx` n'a besoin d'aucune bibliothèque : il ouvre l'archive et lit
 
 ## Emballages et cartons
 
-Chaque colis porte une matière d'emballage. Les matières **à ne pas écraser** sont `carton` et `fibre` par défaut (réglage « Matières à ne pas écraser » : liste de codes séparés par des virgules). Un colis dans l'une de ces matières ne porte que la **charge maximale** réglée dans les paramètres, **0 kg par défaut : rien dessus**. La règle s'applique dans toutes les phases (construction, fusion, tassements, modèle SCIP) et dans la vérification (erreur « carton »).
+Chaque colis porte une matière d'emballage. Les matières **à ne pas écraser** sont `carton` et `fibre` par défaut (réglage « Matières à ne pas écraser » : liste de codes séparés par des virgules). Un colis dans l'une de ces matières ne porte que la **charge maximale** réglée dans les paramètres, **0 kg par défaut : rien dessus**. La règle s'applique dans toutes les phases (heuristique, VND, tassements) et dans la vérification (erreur « carton »). Avec les DAT, elle peut rendre le regroupement impossible : le moteur le relâche alors et le signale.
 
 Ce choix coûte des palettes. Sur le manifeste d'exemple (54 colis, dont 10 en carton et 18 en fibre), mesuré avec le budget par défaut de l'heuristique :
 
@@ -166,65 +164,58 @@ Repère d'une palette, celui du notebook : X = 274 cm (`L`), Y = 224 cm (`W` ; 4
 **Préférences** (objectifs et avertissements)
 
 - Minimiser le nombre d'emplacements puis de palettes (objectif principal), puis la somme des hauteurs, puis recentrer le chargement.
-- Base la plus basse, surface couverte au sol, bandes libres préservées, tas compact (score de CDP_4), poids réparti sur la surface.
+- Base la plus basse, surface couverte au sol, bandes libres préservées, tas compact (score de CDP_5), poids réparti sur la surface.
 - Colis dangereux placés en premier (les plus incompatibles d'abord), contre l'un des deux bords des côtés.
 - Aucun colis isolé : un colis touche toujours un autre colis de sa palette (les tassements refusent un déplacement qui en isolerait un, la vérification émet un avertissement sinon).
 - Palettes de rampe : les plus légères (3 t).
 - Palettes contenant des classes incompatibles entre elles : avertissement « ne pas charger côte à côte » (le positionnement dans l'avion reste hors périmètre, comme le précise le projet).
 
-## Le pipeline en cinq phases
+## Le pipeline du notebook CDP_5
 
-Même enchaînement que `optimiser_palettes` du notebook `CDP_4`. Le journal de calcul de l'interface rend compte de chaque phase.
+Même enchaînement que `optimiser_palettes` du notebook `CDP_5` (cellule 38). Le journal de calcul de l'interface rend compte de chaque phase.
 
-| Phase | Ce qui se passe | Code |
+| Phase | Ce qui se passe | Code du notebook |
 |---|---|---|
-| **1. Placement heuristique** | Construction par **points extrêmes** (coins du plateau, faces voisines au sol, dessus des colis). Les colis dangereux passent d'abord, les plus incompatibles en tête. Choix de la position par un score **lexicographique** : palette déjà ouverte avant une nouvelle, distance d'un colis IATA à l'extrémité en y, base la plus basse, hauteur de la palette, surface couverte au sol, plus grande bande libre, somme des carrés des bandes libres, distance aux bords, support, compacité, centrage du centre de masse. Ordres d'essai : *grande base*, *difficulté*, *volume*, *masse* (ceux du notebook) puis d'autres variantes, dont un remplissage « le plus bas, le plus au fond ». La meilleure construction est conservée (emplacements, palettes, hauteur globale, surface au sol, somme des hauteurs). | `optimisation._placement_heuristique` |
-| **2. Recherche SCIP** *(moteur SCIP)* | L'heuristique est fournie comme **amorce** (solution partielle, avec le côté d'accès de chaque colis dangereux) pour que SCIP la valide, puis **réduction progressive** du nombre d'emplacements (cible = courant − 1, − 2…). Le modèle contient les contraintes IATA du notebook : séparation des classes et choix d'un côté d'accès sans colis devant. Si SCIP ne valide pas l'amorce ou si sa solution est rejetée par le contrôle indépendant, la solution heuristique est conservée. | `moteur_scip.reduire_nombre_palettes` |
-| **3. Fusion des palettes** | Pour chaque paire, les colis de la palette la moins remplie sont transférés vers la plus remplie (les plus grands d'abord) tant que tout reste valide, visibilité IATA comprise ; une palette vidée disparaît. | `optimisation._fusionner` |
-| **4. Tassement vertical** | Chaque colis perché est replacé **plus bas** : autre position, autre orientation permise, tous les niveaux. Un déplacement abaisse strictement la base sans relever le sommet, et n'est accepté que si le chargement reste valide et si le retrait ne laisse aucun colis sans appui. Les affectations aux palettes ne changent pas. | `optimisation._tasser_vertical` |
-| **5. Recentrage et tassement horizontal** | Translation rigide du tas pour centrer son centre de masse, puis chaque colis (les plus lourds d'abord) **glisse vers le centre** selon x puis y, au millimètre près, tant que le chargement reste valide et qu'aucun colis dangereux n'est masqué des deux côtés. Les altitudes ne changent pas. Les palettes de rampe repassent en soute s'il reste de la place. | `_recentrer`, `_tasser`, `_normaliser_zones` |
+| **1. Placement heuristique** | **Cinq essais** de construction par points extrêmes : grande base, difficulté, volume, masse, puis un essai de **plateformes** (couches partielles de hauteurs proches, regard en avance sur trois colis, marge de hauteur de 5 cm). Les colis à étiquette passent d'abord. Avec le regroupement par DAT, chaque groupe est essayé en entier sur une copie de chaque palette. Le meilleur essai est conservé selon : palettes, hauteur globale, surface au sol, somme des hauteurs, centrage. | `construire_placement_heuristique` |
+| **2. VND** | *Variable Neighborhood Descent* pendant le budget indiqué : **transferts** entre palettes (groupes de DAT complets, de la palette la moins remplie vers la plus remplie), **replacements** plus bas (autre position, autre orientation) puis **échanges** de deux colis. Une amélioration acceptée relance les transferts. Le score est lexicographique : nombre de palettes, concentration du chargement, hauteur maximale, somme des hauteurs, surface au sol. Chaque proposition passe par le contrôle indépendant avant d'être acceptée. | `ameliorer_vnd`, `fusionner_palettes`, `tasser_colis_verticalement` |
+| **3. Recentrage** | Translation rigide de chaque tas vers le centre de la palette, sans changer ses contacts. | `recentrer_tas_rigidement` |
+| **4. Tassement horizontal** | Chaque colis (les plus lourds d'abord) glisse vers le centre selon x puis y, au millimètre, tant que le chargement reste valide ; z reste fixe ; le tas est recentré à la fin. | `tasser_colis_vers_centre` |
 
-Le notebook ne minimise plus les hauteurs avec SCIP : le tassement vertical remplace cette étape. Les hauteurs sont améliorées géométriquement, sans preuve de minimum.
+Après l'heuristique et après chaque phase, le **contrôle indépendant** (`controler_chargement_independant`) recalcule les contraintes depuis les entrées : masses, limites, collisions, orientations, appui minimal, accès des colis à étiquette, incompatibilités, regroupement par DAT. Si une phase échoue au contrôle, la dernière solution valide est restaurée. La VND compare les solutions par concentration avant la hauteur : une amélioration acceptée peut donc augmenter la hauteur. Les recherches sont bornées et ne garantissent pas un optimum global.
 
-Étapes affichables dans la vue 3D : `heuristique` (fin de la phase 1), `scip` (fin de la phase 2) et `finale`.
+Étapes affichables dans la vue 3D : `heuristique` (fin de la phase 1), `apres_vnd` (fin de la phase 2) et `finale`.
 
-**Exemple du notebook (54 colis, 2 290 kg, 11 m³, 5 colis dangereux)** : *Exemples… → CDP* charge les colis et les paramètres du notebook (274 × 224 cm sans couloir, aucune règle propre à l'application, mode notebook). Le résultat est celui du notebook, relevé en l'exécutant : phase 1 à 2 palettes (ordres 1 à 4 : 443, 329, 363 et 346 cm de hauteurs cumulées, 220 116 positions testées), fusion de 14 colis, 12 passages et 12,584 m de tassement horizontal, **2 palettes de 218 et 141 cm** (somme 359 cm). Le colis 1 (classe 9) ne peut pas partager une palette avec les colis 2 à 4 (classe 3) : une seule palette est impossible. Environ 40 s de calcul avec 12 s par étape, car le code du notebook n'est pas optimisé et sa phase 4 emploie tout son budget.
+**Exemple du notebook (54 colis, 2 290 kg, 27 DAT)** : *Exemples… → CDP* charge les colis et les paramètres de CDP_5 (274 × 224 cm sans couloir, appui minimal de 80 %, aucune règle propre à l'application). Valeurs relevées en exécutant le notebook : les cinq essais donnent 3, 3, 3, 4 et 3 palettes (4,38 / 3,44 / 3,59 / 3,77 / 5,07 m de hauteurs cumulées, 290 514 positions testées), l'essai 2 est retenu, et la VND de 30 s ramène le chargement à **2 palettes** (1,41 et 2,38 m). Le moteur de l'application retrouve exactement les cinq essais ; la VND dépend du budget de temps, donc du matériel. Environ 45 s de calcul.
 
-## Correspondance avec le notebook CDP_4
+## Correspondance avec le notebook CDP_5
 
-| Notebook `CDP_4` | Application |
+| Notebook `CDP_5` | Application |
 |---|---|
-| Cellule 1 : `palettes` (H = 2,54 m), `colis` avec `iata`, `temps_limite` | `data/exemple_cdp.json` (chargé par *Exemples… → CDP*), formulaire et paramètres ; `temps_limite` → *Budget de l'heuristique* et *Temps SCIP par étape* |
-| `INCOMPATIBILITES_IATA`, `classes_iata_incompatibles` | `data/iata_9_3_A.json`, `iata.ReglesSeparation` (mêmes 18 paires, vérifiées par un test) |
-| `cotes_accessibles_iata`, `chargement_iata_valide`, `attribuer_cotes_iata` | `geometrie.cotes_visibles`, `cotes_bord`, `optimisation._cotes_visibles`, `_cotes_bord`, `_iata_ok` ; le bord et le côté d'accès affichés viennent de `api._palettes_dict`. Même règle que le notebook, sur son axe y par défaut (axe réglable) |
-| Cellules 2, 5, 17 et 18 (heuristique, règles IATA, recentrage et tassements, fusion) | `palettiseur/notebook_cdp.py` : **code repris tel quel**, avec trois accroches marquées « [APPLICATION] » pour les règles de l'application. C'est le moteur du **mode notebook**. |
-| `construire_placement_heuristique` (4 ordres, `priorite_iata`, `positions_candidates`, `score_position`) | `_placement_heuristique`, `_ordre_placement`, `_candidats`, `_meilleure_position` (variante `cdp`) |
-| `ajouter_contraintes_iata` | `moteur_scip.ajouter_contraintes_iata` (+ `ajouter_non_chevauchement` qui expose les variables de séparation) ; colis dangereux contre le bord par contraintes indicatrices |
-| `ajouter_amorce_heuristique`, `contraindre_amorce_heuristique` | `moteur_scip.ajouter_amorce_heuristique`, `contraindre_amorce_heuristique` (avec `acces_gauche`, `acces_droite`) |
-| Autres cellules du modèle : variables, orientations, capacité, symétries, gravité 90 %, hauteurs | `moteur_scip.creer_modele`, `ajouter_*` (mêmes noms qu'au notebook) |
-| `minimiser_nombre_palettes` (recherche progressive) | `moteur_scip.reduire_nombre_palettes` |
-| `fusionner_palettes`, `normaliser_palettes_identiques` | `_fusionner`, `_normaliser_zones` |
-| `tasser_colis_verticalement` | `_tasser_vertical` |
-| `recentrer_tas_rigidement`, `tasser_colis_vers_centre`, `chargement_physique_valide` | `_recentrer`, `_tasser`, `_charge_valide` (utilisée après chaque phase) |
-| `optimiser_palettes` | `optimisation.optimiser` |
-| `afficher_resultat` | journal de calcul (`Resultat.journal`) |
-| Visualisations *avant SCIP / après SCIP / finale* (contour rouge des colis dangereux) | sélecteur **Étape du calcul** (`Resultat.etapes`), contour rouge dans la vue 3D |
+| Cellule 2 : `regrouper_par_DAT`, `temps_limite`, `support_minimal`, `marge_hauteur`, `palettes`, `colis` | `data/exemple_cdp.json` (*Exemples… → CDP*) et paramètres : « Regrouper les colis d'un même DAT », « Budget de la VND », « Support minimal », « Marge de hauteur du 5e essai » |
+| Cellule 2, données `(id, masse, longueur, largeur, hauteur, r, IATA, DAT)` | `Colis` : `numero` (4 derniers chiffres de « Cargo Nat Ref 2 »), `dat` (« Cargo Nat Ref 1 » complet), `classe` ; `r = 1` toujours |
+| Cellule 4 : catégories `A` (WEAPONS) et `B` (WEAPONRY SECURITY PARTS) | classes `ARME` et `SECU` (`iata.classe_notebook`) : visibles depuis un côté, incompatibles entre elles |
+| Cellules 4 et 5 : règles IATA, `partition_DAT`, `groupes_DAT` | `palettiseur/notebook_cdp.py` (code repris tel quel) ; `geometrie.cotes_visibles`, `dat.partition` pour la vérification de l'application |
+| Cellules 6 à 14 : heuristique à cinq essais | `notebook_cdp.construire_placement_heuristique` |
+| Cellules 15 à 17, 25 : replacement plus bas | `notebook_cdp.tasser_colis_verticalement` |
+| Cellules 18 et 26 : recentrage, tassement horizontal | `notebook_cdp.recentrer_tas_rigidement` (avec la contrainte du bord des colis IATA), `tasser_colis_vers_centre` |
+| Cellules 27 à 34 : transferts entre palettes | `notebook_cdp.fusionner_palettes` |
+| Cellule 35 : contrôle indépendant | `notebook_cdp.controler_chargement_independant` |
+| Cellules 36 et 37 : VND | `notebook_cdp.ameliorer_vnd` |
+| Cellule 38 : `optimiser_palettes` | `notebook_cdp.Contexte.executer` (mêmes contrôles et restaurations), puis `optimisation._optimiser_notebook` pour le journal |
+| Cellules 22, 23, 39 à 43 : indicateurs et graphiques | indicateurs du bilan et du panneau « Palette », vue 3D, étapes `heuristique` / `apres_vnd` / `finale` |
 
 **Différences et ajouts**
 
-- Unités et repère : le notebook travaille en mètres avec l'origine au centre de la palette et le centre des colis ; l'application en cm avec le coin minimal (conversions dans `moteur_scip` et `notebook_cdp`). Les axes sont les mêmes (x = 274 cm, y = 224 cm) et les côtés d'accès des colis dangereux sont les extrémités de l'axe y ; l'application y ajoute le couloir de 14 cm.
-- **Mode notebook** (`mode_notebook`) : les phases 1, 3, 4 et 5 sont celles du notebook (`construire_placement_heuristique`, `fusionner_palettes`, `tasser_colis_verticalement`, `recentrer_tas_rigidement`, `tasser_colis_vers_centre`), sans modification de leur algorithme. Hors mode notebook, le moteur de l'application les réimplémente plus vite et essaie plus de stratégies ; ses résultats sont bons mais peuvent différer du notebook, car deux positions équivalentes sont départagées dans un ordre propre à chaque implémentation. Le mode notebook s'adapte aux règles de l'application (lourd sur léger, fragiles, cartons, armes, bord des colis IATA) par trois accroches ; seule l'absence de colis isolé n'y est pas garantie (la vérification la signale). Il n'existe pas pour les listes qui exigent une BIPAL ou une TRIPAL (le notebook ne les connaît pas) ni au-delà de 150 colis : le moteur de l'application prend alors le relais, et le journal le dit. Avec SCIP, la phase 2 s'intercale entre la phase 1 et la fusion du notebook.
-- Le budget `temps_limite` du notebook (180 s) correspond au paramètre « Temps SCIP par étape » : en mode notebook, c'est aussi le budget des phases 3 et 4.
-- Règles de l'application absentes du notebook : colis lourd/léger, fragile, matières d'emballage à ne pas écraser, armement (arme / pièce de sécurité), classes IATA supplémentaires (1.4S, 6.x, 7), BIPAL/TRIPAL, rampe. Elles sont dans l'heuristique, la fusion, les tassements, le modèle SCIP et le contrôle final. La règle « lourd/léger » est la plus contraignante : sans elle, l'ordre « grande base » donne exactement les mêmes résultats que le notebook (2 palettes, 4,43 m de hauteurs cumulées) ; avec elle, il en faut 3 et l'application compense avec ses autres stratégies.
-- Classe 9 : le notebook l'applique à la colonne « 9 voir 9.3.2.1.3 » du tableau (séparée des classes 1, 2.1, 3, 4.1 et 5.1). L'ancien code `9L` de l'application a le même comportement.
-- Le notebook s'arrête si SCIP ne valide pas l'amorce ; l'application conserve la solution heuristique et poursuit les phases 3 à 5.
-- Le tassement vertical dispose d'un quart du budget de l'heuristique, pas des 180 s du notebook : il teste moins de positions. Sur l'exemple, le notebook n'y trouve aucun replacement non plus.
-- Hors mode notebook, l'application essaie plus de stratégies que les quatre ordres du notebook (remplissage « le plus bas, le plus au fond », départs bruités) et garde la meilleure construction selon la clé de CDP_4.
-- La phase de fusion est inchangée par rapport à `CDP_1` et peut relever la palette la plus haute : sur l'exemple, le notebook passe de 172 à 218 cm de hauteur globale. L'application a retiré son propre rééquilibrage des hauteurs, que `CDP_2`, `CDP_3` puis `CDP_4` ont remplacé par le tassement vertical.
-- La tolérance de visibilité est celle de `chargement_physique_valide` (1e-7 m). La règle « posé contre le bord » utilise la tolérance de contact de l'application (0,5 cm).
-- Les colis ne sont plus renversables (demande du projet) : seule la rotation autour de la verticale est permise.
-- Contrôle indépendant : toute solution issue de SCIP est revalidée avant d'être acceptée (tolérance numérique de SCIP).
-- Les paramètres enregistrés par une version précédente du navigateur sont ignorés (nouvelle clé de stockage), pour repartir des valeurs de `CDP_4` (palette de 274 × 224 cm, 14 cm de couloir, hauteur de 2,54 m).
+- Unités et repère : le notebook travaille en mètres avec l'origine au centre de la palette et le centre des colis ; l'application en cm avec le coin minimal (conversions dans `notebook_cdp`). Les axes sont les mêmes (x = 274 cm, y = 224 cm) et les côtés d'accès sont les extrémités de l'axe y ; l'application y ajoute le couloir de 14 cm. L'axe x est possible : le problème est alors transposé avant d'être donné au notebook.
+- **Accroches** : quatre points du code du notebook, marqués « [APPLICATION] », laissent l'application ajouter ses règles (lourd sur léger, fragile, cartons, colis IATA contre un bord, classes absentes du tableau 9.3.A). Elles sont inactives sans règles supplémentaires, et le module se comporte alors exactement comme le notebook. L'absence de colis isolé n'est pas garantie par ce moteur (la vérification la signale).
+- **Catégories A et B** : comme dans le notebook, elles déclenchent l'accessibilité latérale et la préférence pour les extrémités ; l'application n'exige le bord que pour les vraies classes IATA.
+- **Regroupement impossible** : si aucun des cinq essais ne peut garder chaque groupe de DAT sur une palette avec les règles demandées (par exemple cartons non écrasés, couloir et gros DAT), le notebook s'arrête. L'application relâche alors le regroupement (option `regrouper_par_DAT = False` du notebook) avant de changer de moteur, et la vérification signale les DAT répartis.
+- **Relais par le moteur rapide** : le notebook ne connaît ni la BIPAL ni la TRIPAL, et son code n'est pas optimisé (au-delà de 150 colis, trop lent). Dans ces cas, ou si le moteur du notebook échoue, le moteur de l'application calcule (heuristique multi-départ, fusion, tassement vertical, recentrage, tassement horizontal ; sans regroupement par DAT) et le journal le dit.
+- `temps_limite` du notebook (180 s) = « Budget de la VND » (60 s par défaut) ; le temps total est plus long : heuristique (13 s pour 54 colis), contrôles et tassement s'y ajoutent.
+- SCIP est retiré, comme dans le notebook : plus de moteur exact, plus de dépendance `pyscipopt`.
+- Le support minimal passe de 90 % à 80 % (`support_minimal` du notebook).
+- Règles de l'application absentes du notebook : colis lourd/léger, fragile, matières d'emballage à ne pas écraser, classes IATA supplémentaires (1.4S, 6.x, 7), BIPAL/TRIPAL, rampe.
+- Les paramètres enregistrés par une version précédente du navigateur sont ignorés (nouvelle clé de stockage), pour repartir des valeurs de `CDP_5`.
 
 ## Architecture du code
 
@@ -235,12 +226,12 @@ palettiseur/
   modeles.py                Colis, TypePalette, Placement, Palette, Parametres, Etape, Resultat
   iata.py                   classes de colis spéciaux, couleurs, règles de séparation
   geometrie.py              orientations, chevauchement, support, contacts
-  optimisation.py           pipeline en cinq phases (heuristique, fusion, tassement vertical, recentrage et tassement horizontal)
-  moteur_scip.py            phase SCIP : amorce, contraintes IATA, réduction du nombre d'emplacements
+  optimisation.py           choix du moteur, journal et moteur rapide de l'application (heuristique multi-départ, fusion, tassements)
+  dat.py                    partition des colis par DAT (vérification)
   verification.py           contrôle indépendant du plan (erreurs / avertissements)
   coloriage.py              coloriage DSatur, bornes de la heat map
   avion.py                  emplacements selon passagers, bilan de masse
-  notebook_cdp.py           code du notebook CDP_4 repris tel quel (mode notebook) et sa conversion vers l'application
+  notebook_cdp.py           code du notebook CDP_5 repris tel quel (moteur par défaut) et sa conversion vers l'application
   fichiers.py               import CSV / JSON, exports
   import_cargo.py           lecture du manifeste Excel (colonnes, classes, numéro de série, emballage)
   lecteur_xlsx.py           lecteur .xlsx sans dépendance (zip + XML)
@@ -262,11 +253,11 @@ L'interface est une page web servie sur `127.0.0.1` uniquement ; rien ne sort du
 ## Tests
 
 ```bash
-pip install pytest            # + playwright et pyscipopt pour les tests d'interface et SCIP, openpyxl pour comparer le lecteur .xlsx (ignorés sinon)
+pip install pytest            # + playwright pour les tests d'interface, openpyxl pour comparer le lecteur .xlsx (ignorés sinon)
 python -m pytest tests -q
 ```
 
-Les tests couvrent la géométrie, le tableau IATA, chaque phase du pipeline (validité d'un chargement, visibilité IATA, fusion, tassement vertical et horizontal, recentrage, zones), l'heuristique sur des listes aléatoires (aucune erreur de vérification, y compris pour chaque état intermédiaire), l'exemple du notebook (reproduit à l'identique par le mode notebook : 2 palettes de 218 et 141 cm), les deux axes des côtés, les colis dangereux sur le bord à chaque étape, le couloir de 14 cm de chaque côté, la règle des cartons, l'absence de colis isolé, le lecteur `.xlsx` (comparé à openpyxl) et l'import du manifeste, la vérification, le coloriage, l'import/export, le pipeline SCIP et le parcours complet de l'interface (dont l'import Excel). Pour régénérer les captures : `PALETTISEUR_CAPTURES=docs/captures python -m pytest tests/test_interface.py`.
+Les tests couvrent la géométrie, le tableau IATA, chaque phase du pipeline (validité d'un chargement, visibilité IATA, fusion, tassement vertical et horizontal, recentrage, zones), l'heuristique sur des listes aléatoires (aucune erreur de vérification, y compris pour chaque état intermédiaire), les cinq essais de l'heuristique du notebook CDP_5 (reproduits à l'identique sur ses 54 colis), le pipeline complet avec la VND et les contrôles indépendants, le regroupement par DAT (groupes compatibles, DAT conflictuels, regroupement relâché), les catégories A et B, les deux axes des côtés, les colis dangereux sur le bord à chaque étape, le couloir de 14 cm de chaque côté, la règle des cartons, l'absence de colis isolé, le lecteur `.xlsx` (comparé à openpyxl) et l'import du manifeste, la vérification, le coloriage, l'import/export, le moteur rapide de l'application, le relais vers lui et le parcours complet de l'interface (dont l'import Excel). Le test de parité exécute le code du notebook : compter 15 s pour l'heuristique, et près d'une minute pour le parcours d'interface. Pour régénérer les captures : `PALETTISEUR_CAPTURES=docs/captures python -m pytest tests/test_interface.py`.
 
 ## Limites et pistes d'amélioration
 
@@ -274,8 +265,9 @@ Les tests couvrent la géométrie, le tableau IATA, chaque phase du pipeline (va
 - La forme oblique des emplacements de rampe n'est pas modélisée (seulement une hauteur maximale paramétrable).
 - La règle de masse est appliquée entre un colis et ses porteurs directs, pas sur la charge cumulée d'une pile.
 - La résistance mécanique des colis, la stabilité dynamique en vol et l'arrimage (sangles, filet) ne sont pas calculés.
-- SCIP est lent : le modèle croît comme le carré du nombre de colis (réservé aux listes de moins de 60 colis) et la phase 2 consomme le temps indiqué pour chaque cible.
-- Pistes : charge cumulée par colis, priorisation CSOA des UAT, déplacement manuel d'un colis dans la vue 3D, lecture directe des exports MEAT / SILRIA, groupes de compatibilité des explosifs (9.3.2.2.5), échange de colis entre palettes dans la phase des hauteurs.
+- Le moteur du notebook n'est pas optimisé : environ 15 s pour l'heuristique de 54 colis, plus le budget de la VND ; au-delà de 150 colis, ou avec des BIPAL / TRIPAL, le moteur rapide de l'application prend le relais.
+- Les échanges de la VND sont des essais bornés par le budget : le résultat dépend du temps accordé et du matériel, pas seulement des données.
+- Pistes : charge cumulée par colis, priorisation CSOA des UAT, déplacement manuel d'un colis dans la vue 3D, lecture directe des exports MEAT / SILRIA, groupes de compatibilité des explosifs (9.3.2.2.5), accélérer le code du notebook.
 
 ## Licence des composants tiers
 

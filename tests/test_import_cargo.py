@@ -89,6 +89,9 @@ def test_exemple_54_colis_numeros_a_quatre_chiffres(exemple):
         assert len(c["numero"]) == 4 and c["numero"].isdigit()
         assert c["reference"].endswith(c["numero"]) and len(c["reference"]) == 18        # numéro de série complet conservé
     assert numeros[0] == "0836" and colis[0]["reference"] == "636058800103070836"
+    # DAT = chaîne complète de « Cargo Nat Ref 1 », sans troncature (README de CDP_5)
+    assert colis[0]["dat"] == "DAT12301531890" and all(c["dat"].startswith("DAT") and len(c["dat"]) == 14 for c in colis)
+    assert exemple["resume"]["dat"] == 27 and len({c["dat"] for c in colis}) == 27
 
 
 def test_exemple_reconnait_les_armes_et_les_pieces_de_securite(exemple):
@@ -214,3 +217,19 @@ def test_un_classeur_envoye_a_l_import_texte_donne_un_message_clair():
         api.importer_texte("{pas du json")
     with pytest.raises(ValueError, match="illisible"):
         api.importer_texte("a;b\rc;d\n")        # retour chariot isolé au milieu d'une ligne
+
+
+def test_dat_depuis_le_manifeste_et_le_csv(tmp_path):
+    chemin = classeur(tmp_path, [ligne("0001", "A", "Box, Wood"), ligne("0002", "B", "Box, Wood")])
+    # la colonne « Cargo Nat Ref 1 » est l'avant-dernière colonne de EN_TETE : on la renseigne pour les deux lignes
+    wb = openpyxl.load_workbook(chemin)
+    ws = wb.active
+    ws.cell(row=2, column=21, value="DAT99999999999")
+    ws.cell(row=3, column=21, value="DAT99999999999")
+    wb.save(chemin)
+    colis = import_cargo.lire_fichier(chemin)["colis"]
+    assert [c["dat"] for c in colis] == ["DAT99999999999", "DAT99999999999"]
+    # aller-retour CSV avec la colonne dat
+    from palettiseur import fichiers
+    lus, _ = fichiers.lire_csv(fichiers.ecrire_csv([Colis.depuis_dict(c) for c in colis]))
+    assert [c.dat for c in lus] == ["DAT99999999999", "DAT99999999999"]

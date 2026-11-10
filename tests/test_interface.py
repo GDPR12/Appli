@@ -74,25 +74,29 @@ def test_parcours_complet(app):
     page.wait_for_function("window.palettiseur.etat.colis.length === 54")
     params = page.evaluate("window.palettiseur.etat.parametres")
     # l'exemple du notebook en reprend les paramètres : 274 x 224 cm sans couloir, ni règles propres à l'application
-    assert params["mode_notebook"] is True and params["derogation_couloir"] is True and params["iata_au_bord"] is False
+    assert params["moteur"] == "notebook" and params["derogation_couloir"] is True and params["iata_au_bord"] is False
+    assert params["regrouper_par_dat"] is True and params["support_minimal"] == 0.8
     assert params["longueur_palette"] == 224 and params["largeur_palette"] == 274 and params["axe_cotes"] == "y"
     assert params["reduction_couloir"] == 14
-    page.evaluate("window.palettiseur.etat.parametres.duree_recherche = 3; window.palettiseur.etat.parametres.temps_limite_scip = 12")
+    page.evaluate("window.palettiseur.etat.parametres.temps_limite = 12")           # budget de la VND (notebook : 180 s)
 
     # --- calcul
     page.click("#btn-optimiser")
     page.wait_for_function("window.palettiseur.etat.resultat !== null", timeout=120000)
     res = page.evaluate("({n: window.palettiseur.etat.resultat.palettes.length, err: window.palettiseur.etat.resultat.verification.filter(m => m.niveau === 'erreur').length, moteur: window.palettiseur.etat.resultat.moteur, h: window.palettiseur.etat.resultat.palettes.map(p => Math.round(p.hauteur)).sort()})")
-    assert res == {"n": 2, "err": 0, "moteur": "notebook", "h": [141, 218]}        # résultat du notebook
+    assert res["n"] in (2, 3) and res["err"] == 0 and res["moteur"] == "notebook"      # 3 palettes avant la VND, 2 après 30 s
 
     # --- étapes et journal
-    assert page.locator("button.etape").count() == 2
-    assert page.locator("#liste-journal li").count() == 5
+    assert page.locator("button.etape").count() == 3                       # heuristique, après la VND, solution finale
+    assert page.locator("#liste-journal li").count() == 4
+    assert "Cinq essais du notebook" in page.inner_text("#liste-journal")
     page.click("button.etape >> nth=0")
     assert page.evaluate("window.palettiseur.etat.etape") == "heuristique"
     assert page.locator("button.onglet").count() == 1 + len(page.evaluate("window.palettiseur.etat.resultat.etapes[0].palettes"))
     capture("etape_heuristique")
     page.click("button.etape >> nth=1")
+    assert page.evaluate("window.palettiseur.etat.etape") == "apres_vnd"
+    page.click("button.etape >> nth=2")
     assert page.evaluate("window.palettiseur.etat.etape") == "finale"
     capture("vue_ensemble")
 
@@ -126,7 +130,7 @@ def test_parcours_complet(app):
         page.locator("#carte-journal").screenshot(path=str(Path(dossier) / "journal.png"))
 
     # --- colis dangereux : l'accès IATA est affiché
-    page.evaluate("window.palettiseur.selectionnerColis('2')")                 # colis 2 : classe IATA 3
+    page.evaluate("window.palettiseur.selectionnerColis('5487')")              # colis 5487 : classe IATA 3
     panneau = page.inner_text("#contenu-colis")
     assert "étiquette visible" in panneau and "couloir" in panneau and "Emballage" in panneau
 
@@ -139,10 +143,14 @@ def test_parcours_complet(app):
     capture("fiche_palette")
     page.click("#btn-fiche-fermer")
     page.click("#btn-parametres")
-    assert page.is_visible("[data-param=temps_limite_scip]") and page.is_visible("[data-param=iata_au_bord]")
+    assert page.is_visible("[data-param=temps_limite]") and page.is_visible("[data-param=iata_au_bord]")
+    assert page.is_visible("[data-param=regrouper_par_dat]") and page.is_visible("[data-param=marge_hauteur]")
+    assert page.locator("[data-param=temps_limite_scip]").count() == 0 and page.locator("[data-param=mode_notebook]").count() == 0
+    assert [o.get_attribute("value") for o in page.locator("#select-moteur option").all()] == ["notebook", "heuristique"]
+    assert "CDP_5" in page.inner_text("#aide-moteur")
     assert page.is_visible("[data-param=charge_max_carton]") and page.is_visible("[data-param=emballages_ecrasables]")
     assert page.is_visible("[data-param=reduction_couloir]") and page.is_visible("[data-param=axe_cotes]")
-    assert page.is_visible("[data-param=mode_notebook]") and "274 × 224" in page.inner_text("#aide-largeur-utile")
+    assert "274 × 224" in page.inner_text("#aide-largeur-utile")
     page.select_option("[data-param=axe_cotes]", "x")
     page.uncheck("[data-param=derogation_couloir]")
     assert "246 × 224" in page.inner_text("#aide-largeur-utile")            # couloir sur l'axe x : 274 - 2 x 14
@@ -167,12 +175,14 @@ def test_parcours_complet(app):
     page.wait_for_function("window.palettiseur.etat.colis.length === 54")
     colis = page.evaluate("window.palettiseur.etat.colis")
     assert colis[0]["numero"] == "0836" and colis[0]["reference"].endswith("0836") and "renversable" not in colis[0]
+    assert colis[0]["dat"] == "DAT12301531890"                           # « Cargo Nat Ref 1 » complet
     assert sum(c["classe"] == "ARME" for c in colis) == 14 and sum(c["classe"] == "SECU" for c in colis) == 10
     assert sum(c["emballage"] in ("carton", "fibre") for c in colis) == 28
     # paramètres par défaut de l'application (couloir de 14 cm, IATA sur le bord, cartons non écrasés)
-    page.evaluate("window.palettiseur.etat.parametres = {...window.palettiseur.etat.config.parametres, duree_recherche: 3}")
+    page.evaluate("window.palettiseur.etat.parametres = {...window.palettiseur.etat.config.parametres, temps_limite: 8}")
+    page.evaluate("window.palettiseur.etat.resultat = null")           # le résultat précédent contient les mêmes numéros
     page.click("#btn-optimiser")
-    page.wait_for_function("window.palettiseur.etat.resultat && window.palettiseur.etat.resultat.palettes.some(p => p.placements.some(q => q.colis.numero === '0836'))", timeout=60000)
+    page.wait_for_function("window.palettiseur.etat.resultat !== null", timeout=120000)
     res = page.evaluate("({err: window.palettiseur.etat.resultat.verification.filter(m => m.niveau === 'erreur').length, non: window.palettiseur.etat.resultat.non_places.length})")
     assert res == {"err": 0, "non": 0}
     page.click(".onglet[data-palette='ensemble']")
@@ -185,6 +195,7 @@ def test_parcours_complet(app):
     page.evaluate("window.palettiseur.selectionnerColis('0836')")
     panneau = page.inner_text("#contenu-colis")
     assert "étiquette visible" in panneau and "posé contre le bord" in panneau and "N° de série" in panneau
+    assert "DAT12301531890" in panneau
     info_palette = page.inner_text("#contenu-palette")
     assert "couloir de 14" in info_palette and "sur l'axe y" in info_palette and "274 × 196" in info_palette
     page.click("#btn-fiche")

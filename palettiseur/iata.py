@@ -19,8 +19,16 @@ class ClasseColis:
     code: str
     libelle: str
     couleur: str          # couleur d'affichage (hex)
-    iata: bool            # étiquette IATA (pictogramme) -> doit rester visible depuis un côté
+    iata: bool            # étiquette IATA (pictogramme) -> posé contre un bord, visible depuis un côté
     description: str = ""
+
+    @property
+    def visible(self) -> bool:
+        """Doit rester visible depuis l'un des deux côtés : les classes IATA et, comme dans le notebook CDP_5, les
+        catégories artificielles « A » (armes) et « B » (pièces de sécurité d'armes), traitées comme des classes IATA
+        pour l'accessibilité latérale et la préférence pour les extrémités. Seules les vraies classes IATA ont en plus
+        l'obligation d'être posées contre un bord (réglage « IATA au bord »)."""
+        return self.iata or self.code in ("ARME", "SECU")
 
 
 # Ordre d'affichage du menu déroulant de l'interface.
@@ -44,13 +52,13 @@ CLASSES: list[ClasseColis] = [
     ClasseColis("7",    "Matière radioactive (classe 7)",                "#17becf", True),
     ClasseColis("8",    "Matière corrosive (classe 8)",                  "#3d4a5c", True),
     ClasseColis("9",    "Classe 9 (piles au lithium, séparation 9.3.A)", "#98df8a", True,
-                "Comme dans le notebook CDP_2 : jamais avec les classes 1, 2.1, 3, 4.1 et 5.1."),
+                "Comme dans le notebook : jamais avec les classes 1, 2.1, 3, 4.1 et 5.1."),
     ClasseColis("9L",   "Piles / batteries au lithium (ancien code)",    "#4e9bd8", True,
                 "Même règle que la classe 9 ; conservé pour les listes déjà saisies."),
-    ClasseColis("ARME", "Armement : arme",                               "#5c6b2f", False,
-                "Doit voyager sur une autre palette que sa pièce de sécurité."),
-    ClasseColis("SECU", "Armement : pièce de sécurité",                  "#a8b86b", False,
-                "Doit voyager sur une autre palette que l'arme."),
+    ClasseColis("ARME", "Armement : arme (catégorie A)",                 "#5c6b2f", False,
+                "Doit voyager sur une autre palette que sa pièce de sécurité ; reste visible depuis un côté."),
+    ClasseColis("SECU", "Armement : pièce de sécurité (catégorie B)",    "#a8b86b", False,
+                "Doit voyager sur une autre palette que l'arme ; reste visible depuis un côté."),
 ]
 
 PAR_CODE: dict[str, ClasseColis] = {c.code: c for c in CLASSES}
@@ -62,6 +70,20 @@ def classe(code: str | None) -> ClasseColis:
     if code in PAR_CODE:
         return PAR_CODE[code]
     return ClasseColis(code, f"Classe {code}", "#ff00ff", True)
+
+
+def classe_notebook(code: str | None):
+    """Code de classe de l'application -> champ ``iata`` du notebook CDP_5 : ``A`` (armes) et ``B`` (pièces de sécurité
+    d'armes) sont des catégories artificielles traitées comme des classes IATA ; 0 pour un colis ordinaire."""
+    code = (code or "").strip()
+    return {"": 0, "ARME": "A", "SECU": "B", "9L": "9"}.get(code, code)
+
+
+def classe_application(valeur) -> str:
+    """Inverse de ``classe_notebook`` (0 ou '' : colis ordinaire)."""
+    if valeur in (0, None, "", "0"):
+        return ""
+    return {"A": "ARME", "B": "SECU"}.get(str(valeur), str(valeur))
 
 
 class ReglesSeparation:
@@ -131,4 +153,4 @@ def regles() -> ReglesSeparation:
 def description_classes() -> list[dict]:
     """Description des classes pour l'interface (menu déroulant + légende)."""
     return [{"code": c.code, "libelle": c.libelle, "couleur": c.couleur,
-             "iata": c.iata, "description": c.description} for c in CLASSES]
+             "iata": c.iata, "visible": c.visible, "description": c.description} for c in CLASSES]

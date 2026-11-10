@@ -69,7 +69,7 @@ def test_construction_ne_cree_jamais_de_lourd_sur_leger_par_porte_a_faux():
     lot = [Colis(f"C{i}", rng.randint(25, 100), rng.randint(25, 80), rng.randint(15, 70), rng.randint(3, 120),
                  emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "", "", "3", "5.1", "8", "ARME", "SECU"]),
                  fragile=rng.random() < 0.04) for i in range(300)]
-    res = opt.optimiser(lot, Parametres(duree_recherche=1.0, graine=2, positions_soute=20))
+    res = opt.optimiser(lot, Parametres(moteur="heuristique", duree_recherche=1.0, graine=2, positions_soute=20))
     # 300 colis dépassent les 9 emplacements de l'avion : on ne juge ici que les règles de palettisation
     assert [m for m in verifier(res) if m.niveau == "erreur" and m.code not in ("positions", "capacite")] == []
 
@@ -232,7 +232,7 @@ def test_tassement_vertical_ne_releve_jamais_un_sommet():
     rng = random.Random(7)
     lot = [Colis(f"C{i}", rng.randint(30, 100), rng.randint(30, 80), rng.randint(20, 60), rng.randint(5, 250),
                  emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "3", "9", "2.2"])) for i in range(40)]
-    res = opt.optimiser(lot, Parametres(duree_recherche=0.8, derogation_couloir=True))
+    res = opt.optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.8, derogation_couloir=True))
     types = res.parametres.types_palettes()
     chs = []
     for pal in res.palettes:                                  # reconstitue des chargements modifiables
@@ -260,113 +260,26 @@ def test_normaliser_zones_repasse_en_soute():
 # --------------------------------------------------------------------------- pipeline complet
 
 def test_resultat_contient_etapes_et_journal():
-    res = opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(10)], params(duree_recherche=1.0))
-    assert [e.cle for e in res.etapes] == ["heuristique", "finale"]
-    assert [j["phase"] for j in res.journal] == [1, 2, 3, 4, 5]
-    assert [j["titre"] for j in res.journal][3:] == ["Tassement vertical", "Recentrage et tassement horizontal"]
-    assert res.journal[1]["ignoree"] is True              # pas de SCIP avec le moteur heuristique
+    """Moteur rapide : mêmes étapes et mêmes quatre phases que le pipeline de CDP_5 (heuristique, VND, recentrage,
+    tassement horizontal)."""
+    res = opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(10)], params(moteur="heuristique", duree_recherche=1.0))
+    assert res.moteur == "heuristique"
+    assert [e.cle for e in res.etapes] == ["heuristique", "apres_vnd", "finale"]
+    assert [j["phase"] for j in res.journal] == [1, 2, 3, 4]
+    assert [j["titre"] for j in res.journal][2:] == ["Recentrage", "Tassement horizontal"]
     assert "hauteur_globale" in res.journal[-1]
     assert all("texte" in j and j["duree"] >= 0 for j in res.journal)
     assert res.etapes[-1].palettes == res.palettes
 
 
-def test_exemple_cdp_reproduit_le_notebook():
-    """Mode notebook : avec les paramètres du notebook, l'application donne exactement ses résultats (CDP_4, 54 colis).
-
-    Valeurs lues dans la sortie du notebook exécuté : 4 ordres de la phase 1 (2 palettes 443 cm, 2 palettes 329 cm,
-    3 palettes 363 cm, 3 palettes 346 cm ; 220 116 positions testées), 14 colis déplacés par la fusion, 12 passages et
-    12,584 m de tassement horizontal, et finalement 2 palettes de 218 et 141 cm (somme 359 cm).
-    """
-    ex = api.exemple("cdp")
-    assert len(ex["colis"]) == 54 and sum(c["masse"] for c in ex["colis"]) == 2290
-    p = Parametres.depuis_dict(ex["parametres"])
-    assert p.mode_notebook and p.derogation_couloir and not p.iata_au_bord
-    p.temps_limite_scip = 12          # le notebook utilise 180 s ; la fusion a besoin de 5 s, la phase 4 ne trouve rien
-    res = opt.optimiser([Colis.depuis_dict(c) for c in ex["colis"]], p)
-    assert res.moteur == "notebook" and len(res.palettes) == 2 and res.positions_utilisees == 2
-    assert [m for m in verifier(res) if m.niveau == "erreur"] == []
-    assert all(abs(pl.dz - pl.colis.hauteur) < 1e-6 for pal in res.palettes for pl in pal.placements)
-    phase1, phase3, phase4, phase5 = res.journal[0], res.journal[2], res.journal[3], res.journal[4]
-    assert "ordre 1 → 2 palette(s), 443 cm ; ordre 2 → 2 palette(s), 329 cm ; ordre 3 → 3 palette(s), 363 cm ; " \
-           "ordre 4 → 3 palette(s), 346 cm" in phase1["texte"] and phase1["positions_testees"] == 220116
-    assert [round(e.somme_hauteurs if hasattr(e, "somme_hauteurs") else sum(q.hauteur for q in e.palettes))
-            for e in res.etapes[:1]] == [329]
-    assert phase3["colis_transferes"] == 14
-    assert phase4["mouvements"] == 0 and phase4["hauteur_avant"] == pytest.approx(218.0)
-    assert "12 passage(s), 12.584 m" in phase5["texte"]
-    assert sorted(round(q.hauteur) for q in res.palettes) == [141, 218]
-    assert round(sum(q.hauteur for q in res.palettes)) == 359
-
-
-def test_mode_notebook_laisse_les_accroches_inactives():
-    """Les règles de l'application ne restent pas branchées sur le code du notebook après un calcul."""
-    from palettiseur import notebook_cdp
-    opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(6)],
-                  Parametres(duree_recherche=0.5, mode_notebook=True, temps_limite_scip=2))
-    assert notebook_cdp.HOOKS.regles is None and notebook_cdp.HOOKS.incompatibles is None
-
-
-@pytest.mark.parametrize("axe", ["y", "x"])
-def test_mode_notebook_applique_les_regles_de_l_application(axe):
-    """Avec le code du notebook, le plan respecte aussi les cartons, le lourd sur léger, les armes et le bord IATA."""
-    import random
-    from palettiseur.geometrie import cotes_bord, cotes_visibles
-    from palettiseur.iata import classe as classe_de
-    rng = random.Random(4)
-    lot = [Colis(f"C{i}", rng.randint(30, 90), rng.randint(30, 70), rng.randint(20, 60), rng.randint(5, 150),
-                 emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "3", "9", "ARME", "SECU"]),
-                 fragile=rng.random() < 0.05) for i in range(26)]
-    prm = Parametres(duree_recherche=1.0, mode_notebook=True, temps_limite_scip=3, axe_cotes=axe)
-    res = opt.optimiser(lot, prm)
-    assert res.moteur == "notebook" and not res.non_places
-    assert [m for m in verifier(res) if m.niveau == "erreur"] == []
-    for pal in res.palettes:
-        for p in pal.placements:
-            if classe_de(p.colis.classe).iata:
-                assert set(cotes_visibles(p, pal.placements, axe)) & set(
-                    cotes_bord(p, pal.type.etendue_cotes, prm.jeu_contact, axe)), p.colis.numero
-
-
-def test_mode_notebook_cede_la_place_au_moteur_de_l_application():
-    """Le notebook ne connaît pas la BIPAL : un colis de 3 m fait passer le calcul sur le moteur de l'application."""
-    lot = [Colis("long", 320, 80, 60, 400), Colis("petit", 50, 50, 50, 30)]
-    res = opt.optimiser(lot, Parametres(duree_recherche=0.5, mode_notebook=True))
-    assert res.moteur == "heuristique" and res.palettes[0].type.code == "BIPAL" and not res.non_places
-    assert "Mode notebook indisponible" in res.journal[0]["texte"] and "BIPAL" in res.journal[0]["texte"]
-
-
-def test_mode_notebook_en_axe_x_est_le_miroir_du_notebook():
-    """Axe x : l'application transpose le problème (x <-> y) avant d'appeler le notebook, qui garde ses côtés sur y."""
-    ex = api.exemple("cdp")
-    lot = [Colis.depuis_dict(c) for c in ex["colis"]]
-    base = dict(derogation_couloir=True, iata_au_bord=False, facteur_masse=1000.0, emballages_ecrasables="",
-                tare_palette=0, mode_notebook=True, temps_limite_scip=1, duree_recherche=1)
-    suite = opt._placement_heuristique  # noqa: F841 - le calcul complet est trop long : on compare la phase 1
-    from palettiseur import notebook_cdp
-    a_placer = lambda p: [(c, p.types_palettes()[0]) for c in lot]  # noqa: E731
-    px = Parametres(axe_cotes="x", **base)
-    py = Parametres(axe_cotes="y", **base)
-    ctx_x = notebook_cdp.Contexte(a_placer(px), px, regles())
-    assert ctx_x.palettes_nb[0]["L"] == pytest.approx(2.24) and ctx_x.palettes_nb[0]["W"] == pytest.approx(2.74)
-    ctx_y = notebook_cdp.Contexte(a_placer(py), py, regles())
-    assert ctx_y.palettes_nb[0]["L"] == pytest.approx(2.74) and ctx_y.palettes_nb[0]["W"] == pytest.approx(2.24)
-    # un aller-retour de conversion conserve les positions
-    chs = ctx_x.vers_chargements({"palettes": [{"id": 1, "colis": [
-        {"id": 1, "m": 15, "iata": "9", "x": 0.4, "y": -0.3, "z": 0.075, "l_place": 0.45, "w_place": 0.3, "h_place": 0.15}]}]})
-    b = chs[0].boites[0]
-    assert (round(b.x1, 6), round(b.y1, 6), round(b.dx, 6), round(b.dy, 6)) == (92, 129.5, 30, 45)
-    retour = ctx_x.depuis_chargements(chs)["palettes"][0]["colis"][0]
-    assert (round(retour["x"], 6), round(retour["y"], 6)) == (0.4, -0.3)
-
-
 def test_resultat_json_avec_etapes():
     ex = api.exemple("iata")
-    d = api.lancer_optimisation(ex["colis"], {"duree_recherche": 1.0})
+    d = api.lancer_optimisation(ex["colis"], {"moteur": "heuristique", "duree_recherche": 1.0})
     json.dumps(d)
-    assert [e["cle"] for e in d["etapes"]] == ["heuristique", "finale"]
-    assert "palettes" in d["etapes"][0] and "palettes" not in d["etapes"][-1]
+    assert [e["cle"] for e in d["etapes"]] == ["heuristique", "apres_vnd", "finale"]
+    assert "palettes" in d["etapes"][0] and "palettes" in d["etapes"][1] and "palettes" not in d["etapes"][-1]
     assert d["etapes"][0]["bilan"]["colis_places"] == d["bilan"]["colis_places"]
-    assert len(d["journal"]) == 5
+    assert len(d["journal"]) == 4
     assert "hauteur_globale" in d["bilan"]
 
 
@@ -380,7 +293,7 @@ def test_pipeline_aleatoire_toujours_valide(graine):
                          emballage=rng.choice(["", "bois", "carton", "fibre"]),
                          classe=rng.choice(["", "", "", "3", "1", "5.1", "2.2", "8", "9L", "ARME", "SECU"]),
                          fragile=rng.random() < 0.06))
-    res = opt.optimiser(lot, Parametres(duree_recherche=1.0, graine=graine))
+    res = opt.optimiser(lot, Parametres(moteur="heuristique", duree_recherche=1.0, graine=graine))
     assert not res.non_places
     assert [m for m in verifier(res) if m.niveau == "erreur"] == []
     for e in res.etapes:     # chaque état intermédiaire est lui aussi valide

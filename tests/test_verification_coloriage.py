@@ -96,7 +96,7 @@ def test_verification_colis_isole_en_avertissement():
 
 def test_verification_plan_valide_sans_erreur():
     colis = [Colis(f"c{i}", 60, 40, 40, 50) for i in range(12)]
-    res = optimiser(colis, Parametres(duree_recherche=0.3))
+    res = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.3))
     assert [m for m in verifier(res) if m.niveau == "erreur"] == []
 
 
@@ -111,7 +111,7 @@ def test_dsatur_colorie_correctement():
 
 def test_coloriage_carte_voisins_differents():
     colis = [Colis(f"c{i}", 60, 40, 40, 50, classe="3" if i % 3 == 0 else "") for i in range(30)]
-    res = optimiser(colis, Parametres(duree_recherche=0.3))
+    res = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.3))
     for pal in res.palettes:
         for seulement_speciaux in (False, True):
             couleurs = coloriage_carte(pal, seulement_speciaux=seulement_speciaux)
@@ -133,7 +133,7 @@ def test_positions_selon_passagers():
 
 
 def test_bilan_masses():
-    p = Parametres(passagers=10, duree_recherche=0.2)
+    p = Parametres(passagers=10, moteur="heuristique", duree_recherche=0.2)
     res = optimiser([Colis("a", 50, 50, 50, 100)], p)
     b = avion.bilan(res)
     assert b["masse_passagers"] == 10 * 130

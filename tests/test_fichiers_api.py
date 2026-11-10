@@ -5,7 +5,7 @@ from palettiseur.modeles import Colis
 
 
 def test_csv_aller_retour():
-    colis = [Colis("A-1", 80, 60, 50, 120.5, classe="3", commentaire="jerricans ; x", fragile=True, emballage="carton", reference="1234-5678")]
+    colis = [Colis("A-1", 80, 60, 50, 120.5, classe="3", commentaire="jerricans ; x", fragile=True, emballage="carton", reference="1234-5678", dat="DAT123")]
     texte = fichiers.ecrire_csv(colis)
     lus, avert = fichiers.lire_csv(texte)
     assert avert == []
@@ -34,7 +34,7 @@ def test_quantite_developpee_et_resultat_json():
     liste = [{"numero": "Q", "longueur": 40, "largeur": 40, "hauteur": 40, "masse": 10, "quantite": 3}]
     colis = api.colis_depuis_liste(liste)
     assert [c.numero for c in colis] == ["Q-1", "Q-2", "Q-3"]
-    res = api.lancer_optimisation(liste, {"duree_recherche": 0.3})
+    res = api.lancer_optimisation(liste, {"moteur": "heuristique", "duree_recherche": 0.3})
     json.dumps(res)  # sérialisable
     assert res["bilan"]["colis_places"] == 3
     assert res["palettes"][0]["carte_tous"]
@@ -51,4 +51,9 @@ def test_configuration():
     assert cfg["parametres"]["iata_au_bord"] is True
     assert {"carton", "fibre", "bois"} <= {e["code"] for e in cfg["emballages"]}
     assert [e["cle"] for e in cfg["exemples"]] == ["cargo", "cdp", "iata"]
-    assert cfg["moteurs"][0]["code"] == "heuristique"
+    assert [m["code"] for m in cfg["moteurs"]] == ["notebook", "heuristique"]      # plus de SCIP
+    assert cfg["parametres"]["moteur"] == "notebook" and cfg["parametres"]["support_minimal"] == 0.8
+    assert cfg["parametres"]["regrouper_par_dat"] is True and cfg["parametres"]["marge_hauteur"] == 5
+    assert cfg["parametres"]["temps_limite"] == 60
+    assert next(c for c in cfg["classes"] if c["code"] == "ARME")["visible"] is True        # catégorie A du notebook
+    assert next(c for c in cfg["classes"] if c["code"] == "ARME")["iata"] is False
