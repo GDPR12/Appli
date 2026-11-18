@@ -9,7 +9,7 @@ centre des colis ; ``L`` (axe x) = 2,74 m, ``W`` (axe y) = 2,24 m, et les côté
 traitées comme des classes IATA : accessibilité latérale, préférence pour les extrémités et incompatibilité A/B.
 
 Quatre accroches ``HOOKS`` marquées « [APPLICATION] » permettent à l'application d'ajouter ses propres règles (lourd sur
-léger, cartons, bord des colis IATA, classes absentes du tableau) ; elles sont inactives tant que ``HOOKS`` est vide, et
+léger, fragiles, bord des colis IATA, classes absentes du tableau) ; elles sont inactives tant que ``HOOKS`` est vide, et
 le module se comporte alors exactement comme le notebook. Les trois variables ``regrouper_par_DAT``, ``support_minimal``
 et ``marge_hauteur`` sont celles de la cellule 2 du notebook. L'enchaînement des phases et les conversions vers les
 structures de l'application sont plus bas, dans la partie « Adaptation ».
@@ -1738,13 +1738,14 @@ class Contexte:
             l, w = (c.largeur, c.longueur) if self.transpose else (c.longueur, c.largeur)
             self.colis_nb.append({"id": ident, "m": c.masse, "l": l / 100, "w": w / 100, "h": c.hauteur / 100, "r": 1,
                                   "iata": classe_notebook(c.classe), "DAT": c.dat})
-        # Palettes : emplacements de soute, puis de rampe (masse et hauteur limitées), puis des palettes de soute
-        # supplémentaires pour ne jamais manquer d'emplacement (l'application signale le dépassement ensuite).
+        # Palettes : emplacements libres de la soute, puis de la rampe (charge et dimensions propres), puis des palettes
+        # de soute supplémentaires pour ne jamais manquer d'emplacement (l'application signale le dépassement ensuite).
         self.palettes_nb, self.type_de, self.zone_de = [], {}, {}
         rampe = _type_rampe(params, self.base)
-        for k in range(max(params.positions_soute + params.positions_rampe, len(self.colis))):
-            en_rampe = params.positions_soute <= k < params.positions_soute + params.positions_rampe
-            t, zone = (rampe, "rampe") if en_rampe else (self.base, "soute")
+        zones = ["soute"] * params.places_soute + ["rampe"] * params.places_rampe
+        zones += ["soute"] * max(0, len(self.colis) - len(zones))
+        for k, zone in enumerate(zones):
+            t = rampe if zone == "rampe" else self.base
             L, W = (t.longueur, t.largeur) if self.transpose else (t.largeur, t.longueur)
             self.palettes_nb.append({"id": k + 1, "M": t.masse_max, "L": L / 100, "W": W / 100, "H": t.hauteur_max / 100})
             self.type_de[k + 1], self.zone_de[k + 1] = t, zone
@@ -1767,7 +1768,7 @@ class Contexte:
 
     def _regles(self, objets, palette) -> bool:
         """Règles de l'application ajoutées à celles du notebook : charge admissible des porteurs (lourd sur léger,
-        fragile, carton) et colis dangereux (vraies classes IATA) contre un bord avec leur visibilité."""
+        fragile) et colis dangereux (vraies classes IATA) contre un bord avec leur visibilité."""
         niveaux: dict[int, list] = {}
         for o in objets:
             niveaux.setdefault(_niveau(o["z"] + o["h_place"] / 2), []).append(o)
@@ -1888,18 +1889,22 @@ class Contexte:
             charge["centre_masse_x"], charge["centre_masse_y"] = cx + tx, cy + ty
         return resultat
 
-    def executer(self, temps_limite, afficher_logs=False):
+    def executer(self, temps_limite, afficher_logs=False, progression=None):
         """``optimiser_palettes`` (cellule 38) : heuristique, VND, recentrage, tassement horizontal.
 
         Chaque phase est suivie du contrôle indépendant du notebook ; si une phase échoue au contrôle, la dernière
         solution valide est restaurée. Lève ``RuntimeError`` si aucun des cinq essais de l'heuristique n'aboutit et
         ``ValueError`` si l'heuristique est refusée par le contrôle. Retourne un dictionnaire : ``resultat`` (format du
         notebook), ``etapes`` (états ``heuristique``, ``apres_vnd``, ``finale``), ``temps``, ``controles``.
+        ``temps_limite`` est le budget commun de la VND, comme dans le notebook. ``progression(phase, budget)`` est
+        appelée au début de chaque phase (``heuristique``, ``vnd``, ``recentrage``, ``tassement_horizontal``).
         """
         global recentrer_tas_rigidement
         debut_global = perf_counter()
         palettes, colis = self.palettes_nb, self.colis_nb
+        signaler = progression or (lambda phase, budget=None: None)
         with self.actif():
+            signaler("heuristique", None)
             etat = {"resultat": construire_placement_heuristique(colis, palettes)}
             actualiser_chargement(etat["resultat"], palettes)
             temps = {"heuristique": etat["resultat"]["heuristique"]["duree"]}
@@ -1928,11 +1933,14 @@ class Contexte:
                     bilan["restauration"] = True
                 return bilan
 
+            signaler("vnd", temps_limite)
             executer_phase("vnd", lambda: ameliorer_vnd(etat["resultat"], colis, palettes, temps_limite, afficher_logs))
             etapes["apres_vnd"] = deepcopy(etat["resultat"])
             recentrer_tas_rigidement = self._recentrer           # appelé aussi par ``tasser_colis_vers_centre``
             try:
+                signaler("recentrage", None)
                 executer_phase("recentrage", lambda: self._recentrer(etat["resultat"], palettes))
+                signaler("tassement_horizontal", None)
                 executer_phase("tassement_horizontal", lambda: tasser_colis_vers_centre(etat["resultat"], palettes))
             finally:
                 recentrer_tas_rigidement = recentrer_tas_rigidement_notebook

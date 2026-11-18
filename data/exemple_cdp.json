@@ -1,24 +1,19 @@
 {
- "_description": "Colis du notebook CDP_5 (CARGO.xlsx, Feuil1!U2:V55) : numéro = 4 derniers chiffres de « Cargo Nat Ref 2 », DAT = « Cargo Nat Ref 1 », masse (kg), longueur, largeur, hauteur (cm), classe IATA pour cinq colis (9, 3, 3, 3, 2.2), catégories A (armes) et B (pièces de sécurité d'armes). La hauteur de chaque colis reste verticale. Les paramètres sont ceux du notebook : palettes de 2,74 x 2,24 x 2,54 m sans couloir ni tare, appui minimal de 80 %, regroupement par DAT, aucune des règles propres à l'application (lourd sur léger, bord des colis IATA).",
+ "_description": "Colis de la cellule 2 du notebook (CARGO.xlsx, Feuil1!U2:V55) : numéro = 4 derniers chiffres de « Cargo Nat Ref 2 », DAT = « Cargo Nat Ref 1 », masse (kg), longueur, largeur, hauteur (cm), classe IATA pour cinq colis (9, 3, 3, 3, 2.2), catégories A (armes) et B (pièces de sécurité d'armes). La hauteur de chaque colis reste verticale. Les paramètres sont ceux de la cellule 2 : regroupement par DAT, appui minimal de 80 %, marge de hauteur de 5 cm, 7 emplacements en soute (4 536 kg) et 2 sur la rampe (3 000 kg) de 2,74 x 2,24 x 2,54 m. Le budget de temps (temps_limite, 180 s dans le notebook) reste celui que l'on a réglé.",
  "parametres": {
-  "tare_palette": 0,
-  "hauteur_max": 254,
+  "regrouper_par_dat": true,
+  "support_minimal": 0.8,
+  "marge_hauteur": 5,
   "masse_max_soute": 4536,
   "masse_max_rampe": 3000,
   "positions_soute": 7,
   "positions_rampe": 2,
-  "autoriser_bipal": true,
-  "autoriser_tripal": true,
-  "hauteur_max_rampe": 254,
-  "derogation_couloir": true,
+  "emplacements_indisponibles": [],
+  "reduction_couloir": 0,
   "iata_au_bord": false,
-  "facteur_masse": 1000.0,
-  "emballages_ecrasables": "",
-  "support_minimal": 0.8,
-  "regrouper_par_dat": true,
-  "marge_hauteur": 5,
-  "moteur": "notebook",
-  "temps_limite": 30
+  "facteur_masse": 0,
+  "tare_palette": 0,
+  "moteur": "notebook"
  },
  "colis": [
   {

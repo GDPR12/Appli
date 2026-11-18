@@ -6,6 +6,10 @@ import base64
 import csv
 import binascii
 import json
+import threading
+import time
+import traceback
+import uuid
 
 from . import avion, fichiers, import_cargo
 from .emballages import emballages
@@ -13,6 +17,7 @@ from .coloriage import COULEURS_CARTE, coloriage_carte, heat_map
 from .geometrie import cotes_bord, cotes_visibles
 from .lecteur_xlsx import ErreurXlsx
 from .iata import classe as classe_de, description_classes, regles
+from .indicateurs import indicateurs_etat, indicateurs_palette
 from .modeles import Colis, Parametres, Resultat
 from .optimisation import optimiser
 from .ressources import chemin_donnees
@@ -47,12 +52,12 @@ def moteurs_disponibles() -> list[dict]:
 EXEMPLES = [
     {"cle": "cargo", "titre": "CARGO – manifeste Excel (54 colis)",
      "description": "Le manifeste CARGO.xlsx importé : numéros de série, 14 armes, 10 pièces de sécurité, 5 matières "
-                    "dangereuses (classes 9, 3 et 2.2), emballages (28 cartons)."},
+                    "dangereuses (classes 9, 3 et 2.2)."},
     {"cle": "cdp", "titre": "CDP – 54 colis du notebook",
-     "description": "Les 54 colis du notebook CDP_5 (numéros à 4 chiffres, DAT, catégories A et B) avec ses paramètres et son "
-                    "code : 3 palettes après l'heuristique, 2 après la VND (environ 45 s de calcul)."},
+     "description": "Les 54 colis de la cellule 2 du notebook (numéros à 4 chiffres, DAT, catégories A et B) avec ses "
+                    "paramètres : 3 palettes après l'heuristique, 2 après la VND."},
     {"cle": "iata", "titre": "Mixte – matières dangereuses, armement et BIPAL",
-     "description": "Liste variée : classes IATA incompatibles, armement, fragiles, cartons et un colis de 3 m."},
+     "description": "Liste variée : classes IATA incompatibles, armement, fragiles et un colis de 3 m."},
 ]
 
 
@@ -75,13 +80,18 @@ def colis_depuis_liste(liste: list[dict]) -> list[Colis]:
 def _palettes_dict(palettes, params: Parametres) -> list[dict]:
     res = []
     for pal in palettes:
-        d = pal.vers_dict(params.tare_palette, params.largeur_palette, params.longueur_palette * pal.type.positions)
+        if pal.zone == "rampe":
+            largeur, longueur = params.largeur_rampe, params.longueur_rampe
+        else:
+            largeur, longueur = params.largeur_palette, params.longueur_palette * pal.type.positions
+        d = pal.vers_dict(params.tare_palette, largeur, longueur)
         for placement, dict_placement in zip(pal.placements, d["placements"]):
             if classe_de(placement.colis.classe).visible:
                 # côtés d'où l'étiquette est visible, et bord contre lequel le colis est posé (sur l'axe des côtés)
                 axe = pal.type.axe_cotes
                 dict_placement["acces_iata"] = list(cotes_visibles(placement, pal.placements, axe))
                 dict_placement["bord_iata"] = list(cotes_bord(placement, pal.type.etendue_cotes, params.jeu_contact, axe))
+        d["indicateurs"] = indicateurs_palette(pal)
         d["carte_tous"] = coloriage_carte(pal, params.jeu_contact, False)
         d["carte_speciaux"] = coloriage_carte(pal, params.jeu_contact, True)
         res.append(d)
@@ -92,7 +102,8 @@ def _etat_dict(palettes, resultat: Resultat) -> dict:
     """Palettes, vérification et bilan d'un état du pipeline (mêmes règles que la solution finale)."""
     etat = Resultat(palettes, resultat.non_places, resultat.parametres)
     return {"palettes": _palettes_dict(palettes, resultat.parametres),
-            "verification": [m.vers_dict() for m in verifier(etat)], "bilan": avion.bilan(etat)}
+            "verification": [m.vers_dict() for m in verifier(etat)], "bilan": avion.bilan(etat),
+            "indicateurs": indicateurs_etat(palettes)}
 
 
 def resultat_vers_dict(resultat: Resultat) -> dict:
@@ -105,6 +116,8 @@ def resultat_vers_dict(resultat: Resultat) -> dict:
                 "somme_hauteurs": round(sum(p.hauteur for p in e.palettes), 1)}
         if e.cle != "finale":
             item.update(_etat_dict(e.palettes, resultat))
+        else:
+            item["indicateurs"] = finale["indicateurs"]
         etapes.append(item)
     return {
         "statut": resultat.statut,
@@ -116,6 +129,7 @@ def resultat_vers_dict(resultat: Resultat) -> dict:
         "non_places": [{"colis": c.vers_dict(), "motif": m} for c, m in resultat.non_places],
         "verification": finale["verification"],
         "bilan": finale["bilan"],
+        "indicateurs": finale["indicateurs"],
         "heat_map": heat_map(resultat.palettes),
         "couleurs_carte": COULEURS_CARTE,
         "etapes": etapes,
@@ -123,10 +137,79 @@ def resultat_vers_dict(resultat: Resultat) -> dict:
     }
 
 
-def lancer_optimisation(liste_colis: list[dict], parametres: dict | None) -> dict:
+def lancer_optimisation(liste_colis: list[dict], parametres: dict | None, progression=None) -> dict:
     params = Parametres.depuis_dict(parametres)
     colis = colis_depuis_liste(liste_colis)
-    return resultat_vers_dict(optimiser(colis, params))
+    return resultat_vers_dict(optimiser(colis, params, progression=progression))
+
+
+# ---------------------------------------------------------------------------
+# Calcul en arrière-plan : le calcul peut durer plusieurs minutes (budget de 180 s par défaut), on le lance dans un
+# fil et l'interface interroge son avancement.
+# ---------------------------------------------------------------------------
+
+LIBELLES_PHASES = {
+    "preparation": "Préparation des colis",
+    "heuristique": "Phase 1 – placement heuristique",
+    "vnd": "Phase 2 – VND (transferts, replacements, échanges)",
+    "recentrage": "Phase 3 – recentrage",
+    "tassement_horizontal": "Phase 4 – tassement horizontal",
+    "resultat": "Mise en forme du résultat",
+}
+_TRAVAUX: dict[str, dict] = {}
+_VERROU_TRAVAUX = threading.Lock()
+
+
+def demarrer_optimisation(liste_colis: list[dict], parametres: dict | None) -> dict:
+    """Lance le calcul dans un fil et retourne ``{"id", "budget"}`` ; ``etat_optimisation`` donne l'avancement."""
+    params = Parametres.depuis_dict(parametres)
+    with _VERROU_TRAVAUX:
+        if any(t["etat"] == "en_cours" for t in _TRAVAUX.values()):
+            raise ValueError("un calcul est déjà en cours : attendez sa fin")
+        for ancien in sorted(_TRAVAUX, key=lambda k: _TRAVAUX[k]["debut"])[:-2]:
+            del _TRAVAUX[ancien]                       # on ne garde que les derniers calculs
+        identifiant = uuid.uuid4().hex[:12]
+        maintenant = time.time()
+        travail = {"id": identifiant, "etat": "en_cours", "phase": "preparation", "debut": maintenant,
+                   "debut_phase": maintenant, "budget_phase": None, "budget": params.temps_limite}
+        _TRAVAUX[identifiant] = travail
+
+    def progression(phase: str, budget: float | None = None) -> None:
+        travail.update(phase=phase, debut_phase=time.time(), budget_phase=budget)
+
+    def executer() -> None:
+        try:
+            resultat = lancer_optimisation(liste_colis, parametres, progression)
+            travail["resultat"] = resultat
+            travail["etat"] = "termine"
+        except Exception as erreur:  # noqa: BLE001 - l'erreur est rendue à l'interface
+            traceback.print_exc()
+            travail["erreur"] = f"{type(erreur).__name__} : {erreur}"
+            travail["etat"] = "erreur"
+        finally:
+            travail["fin"] = time.time()
+
+    threading.Thread(target=executer, name=f"calcul-{identifiant}", daemon=True).start()
+    return {"id": identifiant, "budget": params.temps_limite}
+
+
+def etat_optimisation(identifiant: str) -> dict:
+    """Avancement d'un calcul : ``etat`` (``en_cours``, ``termine`` ou ``erreur``), phase en cours, temps écoulé et, une
+    fois terminé, le ``resultat`` ou l'``erreur``."""
+    travail = _TRAVAUX.get(identifiant)
+    if travail is None:
+        raise ValueError("calcul inconnu (le serveur a peut-être été relancé)")
+    maintenant = travail.get("fin") or time.time()
+    reponse = {"id": identifiant, "etat": travail["etat"], "phase": travail["phase"],
+               "libelle": LIBELLES_PHASES.get(travail["phase"], travail["phase"]),
+               "ecoule": round(maintenant - travail["debut"], 1),
+               "ecoule_phase": round(maintenant - travail["debut_phase"], 1),
+               "budget_phase": travail["budget_phase"], "budget": travail["budget"]}
+    if travail["etat"] == "termine":
+        reponse["resultat"] = travail["resultat"]
+    elif travail["etat"] == "erreur":
+        reponse["erreur"] = travail["erreur"]
+    return reponse
 
 
 def importer_texte(texte: str) -> dict:
@@ -196,7 +279,7 @@ def exemple(nom: str = "iata") -> dict:
 
 
 def _exemple_iata() -> list[dict]:
-    """Liste variée (21 lignes) : colis ordinaires, cartons, matières dangereuses, armement, fragiles, un colis de 3 m."""
+    """Liste variée (21 lignes) : colis ordinaires, matières dangereuses, armement, fragiles, un colis de 3 m."""
     base = [
         dict(numero="C-001", longueur=80, largeur=60, hauteur=50, masse=120, emballage="bois", commentaire="Caisse outillage"),
         dict(numero="C-002", longueur=70, largeur=50, hauteur=40, masse=90, emballage="bois"),

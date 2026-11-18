@@ -1,7 +1,10 @@
-"""Matières d'emballage : reconnaissance du texte d'un manifeste et règle « ne pas écraser le carton ».
+"""Matières d'emballage : reconnaissance du texte d'un manifeste.
 
 Les matières sont décrites dans ``data/emballages.json`` (modifiable sans toucher au code). Un colis porte
 un *code* de matière (« carton », « bois »…) ; le code vide signifie « non précisée ».
+
+La matière est une simple information (liste, fiche palette, exports) : elle n'intervient dans aucune règle de
+placement, comme dans le notebook.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from .ressources import chemin_donnees
 class Matiere:
     code: str
     libelle: str
-    ecrasable: bool
     mots_cles: tuple[str, ...]
 
 
@@ -35,8 +37,7 @@ class Emballages:
         with open(self.chemin, encoding="utf-8") as f:
             data = json.load(f)
         self.matieres: list[Matiere] = [
-            Matiere(m["code"], m["libelle"], bool(m.get("ecrasable", False)),
-                    tuple(_normaliser(k) for k in m.get("mots_cles", [])))
+            Matiere(m["code"], m["libelle"], tuple(_normaliser(k) for k in m.get("mots_cles", [])))
             for m in data["matieres"]
         ]
         self.par_code = {m.code: m for m in self.matieres}
@@ -58,21 +59,13 @@ class Emballages:
                 return m.code
         return ""
 
-    def ecrasable(self, code: str) -> bool:
-        """Matière écrasable par défaut (réglage initial de « ne pas écraser »)."""
-        m = self.par_code.get(code)
-        return bool(m and m.ecrasable)
-
-    def codes_ecrasables(self) -> list[str]:
-        return [m.code for m in self.matieres if m.code and m.ecrasable]
-
     def libelle(self, code: str) -> str:
         m = self.par_code.get(code)
         return m.libelle if m else (code or "Non précisée")
 
     def description(self) -> list[dict]:
         """Liste pour l'interface : menu déroulant du formulaire."""
-        return [{"code": m.code, "libelle": m.libelle, "ecrasable": m.ecrasable} for m in self.matieres]
+        return [{"code": m.code, "libelle": m.libelle} for m in self.matieres]
 
 
 _EMBALLAGES: Emballages | None = None

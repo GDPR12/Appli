@@ -13,7 +13,6 @@ from itertools import combinations
 
 from . import avion
 from .dat import partition as dat_partition
-from .emballages import emballages
 from .geometrie import cotes_bord, cotes_visibles, en_contact, orientations, se_chevauchent, supports, taux_support
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
 from .modeles import Palette, Parametres, Resultat
@@ -57,20 +56,15 @@ def verifier_palette(pal: Palette, params: Parametres, regles: ReglesSeparation)
         if ts < params.support_minimal - 1e-6:
             msgs.append(Message("erreur", "support", f"Colis {c.numero} : seulement {ts:.0%} de sa base est "
                                 f"soutenue (minimum {params.support_minimal:.0%}).", n, [c.numero]))
-        # Charge admissible des porteurs : lourd sur léger, fragile, carton
+        # Charge admissible des porteurs : lourd sur léger (si demandé), fragile
         for q, _ in supports(p, pls):
-            if c.masse > params.facteur_masse * q.colis.masse + 1e-6:
+            if c.masse > params.plafond_relatif(q.colis.masse) + 1e-6:
                 msgs.append(Message("erreur", "lourd_sur_leger", f"Colis {c.numero} ({c.masse:g} kg) est posé "
                                     f"sur le colis {q.colis.numero} plus léger ({q.colis.masse:g} kg).",
                                     n, [c.numero, q.colis.numero]))
             if q.colis.fragile:
                 msgs.append(Message("erreur", "fragile", f"Colis {c.numero} est posé sur le colis fragile "
                                     f"{q.colis.numero}.", n, [c.numero, q.colis.numero]))
-            elif params.emballage_ecrasable(q.colis.emballage) and c.masse > params.charge_max_carton + 1e-6:
-                msgs.append(Message("erreur", "carton", f"Colis {c.numero} ({c.masse:g} kg) est posé sur le colis "
-                                    f"{q.colis.numero} ({emballages().libelle(q.colis.emballage)}), qui ne doit pas être "
-                                    f"écrasé (charge maximale {params.charge_max_carton:g} kg).",
-                                    n, [c.numero, q.colis.numero]))
         # Colis à étiquette (classes IATA, armes A, pièces de sécurité B) : visible depuis un côté (règle du notebook
         # sur l'axe des côtés) ; les vraies classes IATA sont de plus posées contre ce bord.
         if classe_de(c.classe).visible:

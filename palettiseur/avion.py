@@ -15,13 +15,47 @@ VERSIONS = [
 ]
 
 
-def positions_disponibles(passagers: int, params: Parametres | None = None) -> int:
-    """Nombre d'emplacements de palettes disponibles pour ce nombre de passagers."""
-    total = (params.positions_soute + params.positions_rampe) if params else 9
+def limite_passagers(passagers: int, total: int = 9) -> int:
+    """Nombre maximal d'emplacements de palettes avec ce nombre de passagers (table des versions de l'A400M)."""
     for pax_max, palettes in VERSIONS:
         if passagers <= pax_max:
             return min(total, palettes)
     return 0
+
+
+def positions_disponibles(passagers: int, params: Parametres | None = None) -> int:
+    """Nombre d'emplacements de palettes utilisables : ni déclarés indisponibles, ni pris par les sièges."""
+    if params is None:
+        return limite_passagers(passagers)
+    return len(params.emplacements_libres())
+
+
+def attribuer_emplacements(palettes: list, params: Parametres) -> None:
+    """Affecte à chaque palette les emplacements libres de sa zone, dans l'ordre (soute d'abord à l'avant). Une
+    palette en trop (plus de palettes que d'emplacements libres) n'a pas d'emplacement."""
+    libres = {zone: list(params.emplacements_libres(zone)) for zone in ("soute", "rampe")}
+    for pal in palettes:
+        pal.emplacements = []
+        for _ in range(pal.type.positions):
+            if libres[pal.zone]:
+                pal.emplacements.append(libres[pal.zone].pop(0))
+
+
+def plan_soute(params: Parametres, palettes: list | None = None) -> list[dict]:
+    """Les emplacements de l'avion avec leur état : ``libre`` (utilisable), ``indisponible`` (déclaré à la main),
+    ``passagers`` (pris par les sièges) et, après un calcul, la palette qui l'occupe."""
+    marques, sieges = params.emplacements_marques(), set(params.emplacements_passagers())
+    occupe = {n: pal for pal in (palettes or []) for n in pal.emplacements}
+    plan = []
+    for n in params.numeros_emplacements():
+        zone = params.zone_emplacement(n)
+        t = params.type_rampe() if zone == "rampe" else params.types_palettes()[0]
+        etat = "indisponible" if n in marques else "passagers" if n in sieges else "libre"
+        pal = occupe.get(n)
+        plan.append({"numero": n, "zone": zone, "etat": etat, "masse_max": t.masse_max, "largeur": t.largeur,
+                     "longueur": t.longueur, "hauteur_max": t.hauteur_max,
+                     "palette": pal.numero if pal else None, "masse": round(pal.masse, 1) if pal else None})
+    return plan
 
 
 def bilan(resultat: Resultat) -> dict:
@@ -34,6 +68,7 @@ def bilan(resultat: Resultat) -> dict:
     return {
         "passagers": params.passagers,
         "positions_disponibles": positions_disponibles(params.passagers, params),
+        "plan_soute": plan_soute(params, palettes),
         "positions_utilisees": resultat.positions_utilisees,
         "nombre_palettes": len(palettes),
         "palettes_soute": sum(1 for p in palettes if p.zone == "soute"),

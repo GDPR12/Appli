@@ -2,6 +2,7 @@ import random
 
 import pytest
 
+from conftest import REGLES_PROJET
 from palettiseur.modeles import Colis, Parametres
 from palettiseur.optimisation import optimiser
 from palettiseur.verification import verifier
@@ -22,9 +23,10 @@ def erreurs(resultat):
     return [m for m in verifier(resultat) if m.niveau == "erreur"]
 
 
+@pytest.mark.parametrize("regles", [{}, REGLES_PROJET], ids=["notebook", "projet"])
 @pytest.mark.parametrize("graine", [1, 2, 3])
-def test_plan_sans_erreur(graine):
-    r = optimiser(colis_aleatoires(40, graine), Parametres(moteur="heuristique", duree_recherche=1.0, graine=graine))
+def test_plan_sans_erreur(graine, regles):
+    r = optimiser(colis_aleatoires(40, graine), Parametres(moteur="heuristique", temps_limite=1.0, graine=graine, **regles))
     assert not r.non_places
     assert sum(len(p.placements) for p in r.palettes) == 40
     assert erreurs(r) == []
@@ -32,7 +34,7 @@ def test_plan_sans_erreur(graine):
 
 def test_lourd_jamais_sur_leger():
     colis = [Colis("lourd", 60, 60, 40, 300), Colis("leger", 60, 60, 40, 20), Colis("moyen", 60, 60, 40, 100)]
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5))
     for pal in r.palettes:
         for p in pal.placements:
             for q in pal.placements:
@@ -43,7 +45,7 @@ def test_lourd_jamais_sur_leger():
 def test_la_hauteur_reste_verticale():
     """Plus de colis renversable : un colis garde toujours sa hauteur saisie à la verticale."""
     colis = [Colis(f"L{i}", 150, 40, 40, 50) for i in range(6)]
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5))
     for pal in r.palettes:
         for p in pal.placements:
             assert p.dz == 40  # la hauteur reste verticale
@@ -52,20 +54,20 @@ def test_la_hauteur_reste_verticale():
 def test_incompatibles_separes():
     colis = [Colis("expl", 50, 50, 50, 40, classe="1"), Colis("carb", 50, 50, 50, 40, classe="3"),
              Colis("oxy", 50, 50, 50, 40, classe="5.1"), Colis("ordi", 50, 50, 50, 40)]
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5))
     assert len(r.palettes) == 3  # 1, 3 et 5.1 sont deux à deux incompatibles
     assert erreurs(r) == []
 
 
 def test_arme_et_piece_de_securite_separees():
     colis = [Colis("arme", 100, 40, 30, 60, classe="ARME"), Colis("secu", 30, 30, 20, 10, classe="SECU")]
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5))
     assert len(r.palettes) == 2
 
 
 def test_colis_trop_long_sur_bipal():
     colis = [Colis("long", 320, 80, 60, 400), Colis("petit", 50, 50, 50, 30)]
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5))
     assert r.palettes[0].type.code == "BIPAL"
     assert r.positions_utilisees == 2
     assert not r.non_places
@@ -73,7 +75,7 @@ def test_colis_trop_long_sur_bipal():
 
 
 def test_colis_impossible_en_vrac():
-    p = Parametres(moteur="heuristique", duree_recherche=0.5, autoriser_tripal=False)
+    p = Parametres(moteur="heuristique", temps_limite=0.5, autoriser_tripal=False)
     colis = [Colis("helice", 500, 80, 60, 400), Colis("ok", 50, 50, 50, 30)]
     r = optimiser(colis, p)
     assert [c.numero for c, _ in r.non_places] == ["helice"]
@@ -82,13 +84,13 @@ def test_colis_impossible_en_vrac():
 
 
 def test_colis_trop_lourd():
-    r = optimiser([Colis("enclume", 50, 50, 50, 15000)], Parametres(moteur="heuristique", duree_recherche=0.5))  # > 3 x 4 406 kg
+    r = optimiser([Colis("enclume", 50, 50, 50, 15000)], Parametres(moteur="heuristique", temps_limite=0.5))  # > 3 x 4 406 kg
     assert r.non_places and "masse" in r.non_places[0][1]
 
 
 def test_capacite_masse_palette():
     colis = [Colis(f"b{i}", 100, 100, 50, 1000) for i in range(9)]  # 9 t : au moins 3 palettes 10k (4 406 kg net)
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5, autoriser_bipal=False, autoriser_tripal=False))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5, autoriser_bipal=False, autoriser_tripal=False))
     assert all(p.masse <= p.type.masse_max for p in r.palettes)
     assert len(r.palettes) >= 3
     assert erreurs(r) == []
@@ -102,7 +104,7 @@ def test_colis_iata_visibles_et_sur_le_bord_a_chaque_etape(axe):
     from palettiseur.iata import classe as classe_de
     colis = [Colis(f"d{i}", 40, 40, 40, 30, classe=c) for i, c in enumerate(["3", "3", "9", "2.2", "8"])]
     colis += [Colis(f"o{i}", 50, 40, 40, 30) for i in range(30)]
-    params = Parametres(moteur="heuristique", duree_recherche=0.8, axe_cotes=axe)
+    params = Parametres(moteur="heuristique", temps_limite=0.8, axe_cotes=axe, **REGLES_PROJET)
     r = optimiser(colis, params)
     for etape in r.etapes:
         for pal in etape.palettes:
@@ -118,7 +120,7 @@ def test_colis_iata_visibles_et_sur_le_bord_a_chaque_etape(axe):
 @pytest.mark.parametrize("axe,largeur,longueur", [("y", 274, 196), ("x", 246, 224)])
 def test_aucun_colis_ne_deborde_dans_le_couloir(axe, largeur, longueur):
     """Le couloir de 14 cm de chaque côté réduit l'axe des côtés (y : 224 -> 196 cm, x : 274 -> 246 cm)."""
-    r = optimiser(colis_aleatoires(40, 5), Parametres(moteur="heuristique", duree_recherche=0.8, graine=5, axe_cotes=axe))
+    r = optimiser(colis_aleatoires(40, 5), Parametres(moteur="heuristique", temps_limite=0.8, graine=5, axe_cotes=axe, **REGLES_PROJET))
     for pal in r.palettes:
         assert pal.type.largeur == largeur and pal.type.longueur == longueur * pal.type.positions - (
             28 * (pal.type.positions - 1) if axe == "y" else 0)
@@ -126,46 +128,56 @@ def test_aucun_colis_ne_deborde_dans_le_couloir(axe, largeur, longueur):
             assert p.x >= -1e-6 and p.x2 <= pal.type.largeur + 1e-6 and p.y >= -1e-6 and p.y2 <= pal.type.longueur + 1e-6
 
 
-def test_derogation_couloir_utilise_toute_la_zone():
-    """215 x 215 cm tient sur les 224 cm du plateau mais pas sur les 196 cm utiles (axe y) : il faut alors une BIPAL."""
+def test_le_couloir_reduit_la_zone_utile():
+    """215 x 215 cm tient sur les 224 cm du plateau (sans couloir) mais pas sur les 196 cm utiles (axe y) : BIPAL."""
     lot = [Colis("large", 215, 215, 50, 100)]
-    r = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.3, derogation_couloir=True))
+    r = optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.3))
     assert r.palettes[0].type.code == "10K" and r.palettes[0].type.longueur == 224 and not r.non_places
-    r = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.3))
+    r = optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.3, reduction_couloir=14))
     assert not r.non_places and r.palettes[0].type.code == "BIPAL"
     # même chose sur x : 250 x 100 passe sur 274 cm, pas sur 246 cm
     lot = [Colis("large", 250, 100, 50, 100)]
-    r = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.3, axe_cotes="x", derogation_couloir=True))
+    r = optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.3, axe_cotes="x"))
     assert r.palettes[0].type.code == "10K"
-    r = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.3, axe_cotes="x"))
+    r = optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.3, axe_cotes="x", reduction_couloir=14))
     assert r.palettes[0].type.code == "BIPAL"
 
 
-def test_rien_de_lourd_sur_un_carton():
-    """Les cartons ne sont pas écrasés : sans charge autorisée, aucun colis n'est posé dessus."""
-    lot = [Colis(f"K{i}", 60, 60, 40, 40, emballage="carton") for i in range(8)]
-    lot += [Colis(f"B{i}", 60, 60, 40, 30, emballage="bois") for i in range(8)]
-    r = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.8))
+def test_rien_de_lourd_sur_un_colis_plus_leger_quand_la_regle_est_demandee():
+    lot = [Colis(f"L{i}", 60, 60, 40, 20) for i in range(8)] + [Colis(f"H{i}", 60, 60, 40, 80) for i in range(8)]
+    r = optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.8, facteur_masse=1))
     assert erreurs(r) == []
     for pal in r.palettes:
         for p in pal.placements:
-            if p.colis.emballage == "carton":
-                for q in pal.placements:
-                    assert not (q is not p and abs(q.z - p.z2) < 1e-6 and q.x < p.x2 and p.x < q.x2 and q.y < p.y2 and p.y < q.y2)
+            for q in pal.placements:
+                posé_dessus = q is not p and abs(q.z - p.z2) < 1e-6 and q.x < p.x2 and p.x < q.x2 and q.y < p.y2 and p.y < q.y2
+                assert not posé_dessus or q.colis.masse <= p.colis.masse + 1e-6
 
 
-def test_charge_maximale_sur_carton_autorise_un_colis_leger():
-    lot = [Colis("carton", 100, 100, 40, 80, emballage="carton"), Colis("leger", 100, 100, 40, 20)]
-    sans = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.5, support_minimal=1.0))
-    assert erreurs(sans) == []
-    avec = optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.5, charge_max_carton=25))
-    assert erreurs(avec) == []
+def test_la_matiere_de_l_emballage_ne_change_pas_le_placement():
+    """Le notebook ne connaît pas la matière : deux lots qui ne diffèrent que par elle donnent le même plan (cinq essais
+    de l'heuristique du notebook, déterministes)."""
+    def plan(matiere):
+        lot = [Colis(f"K{i}", 60, 60, 40, 40, emballage=matiere) for i in range(8)]
+        lot += [Colis(f"B{i}", 60, 60, 40, 30, emballage=matiere) for i in range(8)]
+        r = optimiser(lot, Parametres(temps_limite=1))
+        assert r.moteur == "notebook"
+        return [(p.colis.numero, round(p.x, 3), round(p.y, 3), round(p.z, 3), p.dx, p.dy, p.dz)
+                for pal in r.etapes[0].palettes for p in pal.placements]
+    assert plan("carton") == plan("bois") == plan("fibre") == plan("")
+
+
+def test_des_colis_en_carton_peuvent_porter_d_autres_colis():
+    lot = [Colis(f"K{i}", 80, 80, 40, 40, emballage="carton") for i in range(20)]
+    r = optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.8))
+    assert erreurs(r) == []
+    assert any(p.z > 0 for pal in r.palettes for p in pal.placements)        # empilés : aucune règle ne l'interdit
 
 
 def test_aucun_colis_isole():
     """Règle du projet : un colis ne reste jamais seul à l'écart des autres sur sa palette."""
     from palettiseur.geometrie import en_contact
-    r = optimiser(colis_aleatoires(40, 4, speciaux=False), Parametres(moteur="heuristique", duree_recherche=1.0, graine=4))
+    r = optimiser(colis_aleatoires(40, 4, speciaux=False), Parametres(moteur="heuristique", temps_limite=1.0, graine=4))
     for pal in r.palettes:
         if len(pal.placements) < 2:
             continue
@@ -188,7 +200,7 @@ def test_les_colis_dangereux_sont_places_en_premier_les_plus_incompatibles_d_abo
 
 def test_fragile_rien_dessus():
     colis = [Colis("frag", 60, 60, 40, 200, fragile=True)] + [Colis(f"o{i}", 60, 60, 40, 50) for i in range(30)]
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5))
     for pal in r.palettes:
         frag = [p for p in pal.placements if p.colis.fragile]
         for f in frag:
@@ -199,7 +211,7 @@ def test_fragile_rien_dessus():
 
 def test_rampe_apres_soute():
     colis = [Colis(f"b{i}", 190, 190, 100, 2500) for i in range(9)]  # une palette par colis (2,5 t < 3 t brut)
-    r = optimiser(colis, Parametres(moteur="heuristique", duree_recherche=0.5, autoriser_bipal=False, autoriser_tripal=False))
+    r = optimiser(colis, Parametres(moteur="heuristique", temps_limite=0.5, autoriser_bipal=False, autoriser_tripal=False))
     zones = [p.zone for p in r.palettes]
     assert zones.count("rampe") == 2 and zones[:7] == ["soute"] * 7
     # les palettes rampe respectent 3 t brut
@@ -207,6 +219,6 @@ def test_rampe_apres_soute():
 
 
 def test_liste_vide_et_saisie_invalide():
-    assert optimiser([], Parametres(moteur="heuristique", duree_recherche=0.2)).palettes == []
-    r = optimiser([Colis("", 0, 10, 10, 5)], Parametres(moteur="heuristique", duree_recherche=0.2))
+    assert optimiser([], Parametres(moteur="heuristique", temps_limite=0.2)).palettes == []
+    r = optimiser([Colis("", 0, 10, 10, 5)], Parametres(moteur="heuristique", temps_limite=0.2))
     assert r.non_places and "saisie invalide" in r.non_places[0][1]

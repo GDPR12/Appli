@@ -34,7 +34,7 @@ def test_quantite_developpee_et_resultat_json():
     liste = [{"numero": "Q", "longueur": 40, "largeur": 40, "hauteur": 40, "masse": 10, "quantite": 3}]
     colis = api.colis_depuis_liste(liste)
     assert [c.numero for c in colis] == ["Q-1", "Q-2", "Q-3"]
-    res = api.lancer_optimisation(liste, {"moteur": "heuristique", "duree_recherche": 0.3})
+    res = api.lancer_optimisation(liste, {"moteur": "heuristique", "temps_limite": 0.3})
     json.dumps(res)  # sérialisable
     assert res["bilan"]["colis_places"] == 3
     assert res["palettes"][0]["carte_tous"]
@@ -47,13 +47,18 @@ def test_configuration():
     assert "1" in cfg["incompatibilites"]["3"]
     assert cfg["parametres"]["largeur_palette"] == 274
     assert cfg["parametres"]["longueur_palette"] == 224
-    assert cfg["parametres"]["reduction_couloir"] == 14
-    assert cfg["parametres"]["iata_au_bord"] is True
+    # valeurs par défaut = cellule 2 du notebook ; règles du projet désactivées
+    p = cfg["parametres"]
+    assert (p["temps_limite"], p["support_minimal"], p["marge_hauteur"], p["regrouper_par_dat"]) == (180, 0.8, 5, True)
+    assert (p["masse_max_soute"], p["masse_max_rampe"], p["hauteur_max"]) == (4536, 3000, 254)
+    assert (p["positions_soute"], p["positions_rampe"], p["emplacements_indisponibles"]) == (7, 2, [])
+    assert (p["reduction_couloir"], p["iata_au_bord"], p["facteur_masse"], p["tare_palette"]) == (0, False, 0, 0)
+    assert not {"duree_recherche", "derogation_couloir", "emballages_ecrasables", "charge_max_carton"} & set(p)
     assert {"carton", "fibre", "bois"} <= {e["code"] for e in cfg["emballages"]}
     assert [e["cle"] for e in cfg["exemples"]] == ["cargo", "cdp", "iata"]
     assert [m["code"] for m in cfg["moteurs"]] == ["notebook", "heuristique"]      # plus de SCIP
     assert cfg["parametres"]["moteur"] == "notebook" and cfg["parametres"]["support_minimal"] == 0.8
     assert cfg["parametres"]["regrouper_par_dat"] is True and cfg["parametres"]["marge_hauteur"] == 5
-    assert cfg["parametres"]["temps_limite"] == 60
+    assert cfg["parametres"]["temps_limite"] == 180
     assert next(c for c in cfg["classes"] if c["code"] == "ARME")["visible"] is True        # catégorie A du notebook
     assert next(c for c in cfg["classes"] if c["code"] == "ARME")["iata"] is False

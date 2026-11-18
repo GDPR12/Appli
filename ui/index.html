@@ -27,11 +27,11 @@
   </div>
 </header>
 
-<main class="disposition">
+<main class="disposition" id="disposition">
 
   <!-- ===================== Colonne gauche : saisie des colis ===================== -->
   <aside class="panneau gauche">
-    <section class="carte">
+    <section class="carte" id="carte-formulaire">
       <h2 id="titre-formulaire">Nouveau colis</h2>
       <form id="formulaire-colis" autocomplete="off">
         <div class="grille-2">
@@ -51,7 +51,7 @@
           <select id="f-classe"></select>
         </label>
         <div class="grille-2">
-          <label>Matière d'emballage
+          <label title="Information seulement : la matière n'influence pas le placement (le notebook ne la connaît pas)">Emballage (information)
             <select id="f-emballage"></select>
           </label>
           <label>Quantité<input type="number" id="f-quantite" min="1" step="1" value="1"></label>
@@ -74,6 +74,8 @@
       </form>
     </section>
 
+    <div class="separateur horizontal" data-cible="carte-formulaire" title="Glisser pour agrandir le formulaire ou la liste (double-clic : taille d'origine)"></div>
+
     <section class="carte liste">
       <div class="entete-liste">
         <h2>Colis à palettiser <span class="badge" id="compteur-colis">0</span></h2>
@@ -82,11 +84,12 @@
           <button id="btn-vider" class="lien danger" title="Supprimer tous les colis">Tout effacer</button>
         </div>
       </div>
+      <p class="aide aide-liste">Cliquez dans une case pour corriger un colis avant le calcul : Entrée valide et passe au colis suivant, Échap annule.</p>
       <div class="table-defilante">
         <table id="table-colis">
           <thead>
             <tr>
-              <th>N°</th><th>L × l × h (cm)</th><th>kg</th><th>Emb.</th><th>Classe</th><th>Palette</th><th></th>
+              <th>N°</th><th title="Quantité">Qté</th><th title="Longueur (cm)">L</th><th title="Largeur (cm)">l</th><th title="Hauteur (cm)">h</th><th title="Masse (kg)">kg</th><th>Classe</th><th title="Fragile : rien dessus">Fr.</th><th>DAT</th><th>Palette</th><th></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -94,11 +97,14 @@
         <p class="vide" id="liste-vide">Aucun colis. Ajoutez des colis avec le formulaire, utilisez « Importer… » (manifeste Excel, CSV ou projet JSON) ou chargez un exemple.</p>
       </div>
       <p class="aide">Masse totale : <strong id="masse-totale">0 kg</strong> · Volume : <strong id="volume-total">0 m³</strong></p>
+      <p class="erreur" id="erreur-liste" hidden></p>
     </section>
   </aside>
 
+  <div class="separateur vertical" data-colonne="g" title="Glisser pour élargir la colonne des colis (double-clic : largeur d'origine)"></div>
+
   <!-- ===================== Centre : vue 3D ===================== -->
-  <section class="centre">
+  <section class="centre" id="centre">
     <div class="onglets" id="onglets">
       <button class="onglet actif" data-palette="ensemble">Vue d'ensemble</button>
     </div>
@@ -123,16 +129,51 @@
         <p>Saisissez vos colis puis cliquez sur « Confectionner les palettes ».</p>
         <p class="aide">Rotation : clic gauche · Zoom : molette · Déplacement : clic droit · Clic sur un colis : détails</p>
       </div>
-      <div class="chargement" id="chargement" hidden><div class="spinner"></div><p>Calcul en cours…</p></div>
+      <div class="chargement" id="chargement" hidden>
+        <div class="spinner"></div>
+        <p id="chargement-phase"><strong>Calcul en cours…</strong></p>
+        <div class="barre-jauge large"><span id="chargement-barre" style="width:0%"></span></div>
+        <p class="aide" id="chargement-temps"></p>
+      </div>
     </div>
     <div class="legende" id="legende"></div>
+    <div class="separateur horizontal" data-cible="panneau-qualite" data-sens="apres" id="separateur-qualite" hidden title="Glisser pour agrandir le tableau de qualité (double-clic : taille d'origine)"></div>
+    <section class="panneau-qualite" id="panneau-qualite" hidden>
+      <div class="entete-qualite">
+        <h2>Qualité des palettes <span class="aide" id="qualite-etape"></span></h2>
+        <p class="resume-qualite" id="qualite-resume"></p>
+        <button type="button" class="lien bouton-reduire" id="btn-reduire-qualite" title="Réduire ou agrandir le tableau">Réduire ▾</button>
+      </div>
+      <div class="table-defilante">
+        <table id="table-qualite">
+          <thead>
+            <tr>
+              <th>Palette</th><th title="Emplacements de l'avion occupés">Empl.</th><th>Colis</th><th>Masse (kg)</th><th>Hauteur (m)</th>
+              <th title="Volume des colis / volume de leur boîte englobante">Compacité (%)</th>
+              <th title="Volume des colis / volume total disponible de la palette">Remplissage volumique (%)</th>
+              <th title="Surface réellement couverte au sol, en part du plateau">Surface au sol (%)</th>
+              <th title="Centre de masse des colis, depuis le centre du plateau">Centre de masse x (m)</th>
+              <th>Centre de masse y (m)</th>
+              <th title="Distance horizontale entre le centre de masse et le centre du plateau (0 = centré)">Décalage horizontal (m)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="aide" id="qualite-legende">Compacité : volume des colis / enveloppe du tas. Remplissage : volume des colis / volume total disponible de la palette. Décalage : distance horizontale entre le centre de masse des colis et le centre du plateau (0 = centré).</p>
+      <div id="qualite-etapes"></div>
+    </section>
   </section>
+
+  <div class="separateur vertical" data-colonne="d" title="Glisser pour élargir la colonne des résultats (double-clic : largeur d'origine)"></div>
 
   <!-- ===================== Colonne droite : résultats ===================== -->
   <aside class="panneau droite">
     <section class="carte" id="bilan">
       <h2>Bilan</h2>
+      <p class="aide alerte" id="bilan-perime" hidden>La liste de colis ou les paramètres ont changé depuis ce calcul : relancez « Confectionner les palettes ».</p>
       <div class="grille-bilan" id="grille-bilan"><p class="vide">Lancez un calcul pour obtenir le bilan.</p></div>
+      <div id="plan-bilan" class="plan-bilan" hidden></div>
       <div class="boutons-export" id="boutons-export" hidden>
         <button class="secondaire petit" id="btn-plan-csv" title="Plan de chargement : une ligne par colis avec sa palette et sa position">Plan CSV</button>
         <button class="secondaire petit" id="btn-plan-json">Plan JSON</button>
@@ -141,20 +182,28 @@
       <p class="aide" id="info-export" hidden></p>
     </section>
 
+    <div class="separateur horizontal" data-cible="bilan" title="Glisser pour redimensionner (double-clic : taille d'origine)"></div>
+
     <section class="carte" id="palette-info">
       <h2>Palette</h2>
       <div id="contenu-palette"><p class="vide">Sélectionnez une palette dans les onglets.</p></div>
     </section>
+
+    <div class="separateur horizontal" data-cible="palette-info" title="Glisser pour redimensionner (double-clic : taille d'origine)"></div>
 
     <section class="carte" id="colis-info">
       <h2>Colis sélectionné</h2>
       <div id="contenu-colis"><p class="vide">Cliquez sur un colis dans la vue 3D ou dans la liste.</p></div>
     </section>
 
+    <div class="separateur horizontal" data-cible="colis-info" title="Glisser pour redimensionner (double-clic : taille d'origine)"></div>
+
     <section class="carte" id="messages">
       <h2>Vérification <span class="badge" id="compteur-messages">0</span></h2>
       <ul id="liste-messages"><li class="vide">Aucun message.</li></ul>
     </section>
+
+    <div class="separateur horizontal" data-cible="messages" id="separateur-journal" hidden title="Glisser pour redimensionner (double-clic : taille d'origine)"></div>
 
     <section class="carte" id="carte-journal" hidden>
       <h2>Journal de calcul</h2>
@@ -167,56 +216,70 @@
 <dialog id="dlg-parametres">
   <form method="dialog" id="form-parametres">
     <h2>Paramètres</h2>
+    <p class="aide">Les valeurs par défaut sont celles de la cellule 2 du notebook : avec elles, l'application donne le même résultat que le notebook. Les règles du projet (couloir, IATA au bord, lourd sur léger) sont des options en plus.</p>
     <div class="colonnes-params">
       <fieldset>
-        <legend>Palette 10k</legend>
-        <label title="Axe x du notebook (L = 2,74 m)">Dimension selon x (cm)<input type="number" data-param="largeur_palette" step="1"></label>
-        <label title="Axe y du notebook (W = 2,24 m) ; une BIPAL en compte le double">Dimension selon y (cm)<input type="number" data-param="longueur_palette" step="1"></label>
+        <legend>Calcul · cellule 2 du notebook</legend>
+        <label title="temps_limite du notebook : budget commun de la VND. Chaque phase de recherche peut utiliser tout ce budget ; l'heuristique, le recentrage, le tassement et les contrôles n'en ont pas besoin. Le temps total est donc plus long que ce budget.">Budget de calcul (s) <small>temps_limite</small><input type="number" data-param="temps_limite" step="any" min="1" max="7200"></label>
+        <label class="case" title="regrouper_par_DAT : un DAT sans conflit reste sur une palette ; un DAT contenant des classes incompatibles est divisé en sous-groupes compatibles. Le moteur rapide de l'application ne l'applique pas."><input type="checkbox" data-param="regrouper_par_dat"> Regrouper les colis d'un même DAT <small>regrouper_par_DAT</small></label>
+        <label title="support_minimal du notebook : fraction minimale de la base d'un colis qui doit reposer sur quelque chose (80 %)">Support minimal de la base (%) <small>support_minimal</small><input type="number" data-param="support_minimal" data-pourcent="1" step="any" min="10" max="100"></label>
+        <label title="marge_hauteur du notebook, cinquième essai de l'heuristique seulement : écart maximal de base au-dessus de la base minimale admissible (0 interdit tout écart)">Marge de hauteur du 5e essai (cm) <small>marge_hauteur</small><input type="number" data-param="marge_hauteur" step="any" min="0"></label>
+        <label>Moteur<select data-param="moteur" id="select-moteur"></select></label>
+        <p class="aide" id="aide-moteur"></p>
+        <label title="Moteur rapide de l'application uniquement">Graine aléatoire (moteur rapide)<input type="number" data-param="graine" step="any" min="0"></label>
+      </fieldset>
+      <fieldset class="large" id="fieldset-emplacements">
+        <legend>Emplacements de palettes · 7 en soute, 2 sur la rampe</legend>
+        <p class="aide">Cliquez sur un emplacement pour le déclarer indisponible (ou le libérer). Les palettes sont posées d'abord en soute, de l'avant vers l'arrière, puis sur la rampe.</p>
+        <div id="plan-parametres" class="plan-conteneur"></div>
+        <p class="aide" id="aide-plan"></p>
+        <div class="grille-zones">
+          <div class="zone zone-soute">
+            <h3>Soute · emplacements 1 à 7</h3>
+            <label title="M du notebook">Charge maximale (kg) <small>M</small><input type="number" data-param="masse_max_soute" step="any"></label>
+            <div class="grille-3">
+              <label title="L du notebook (axe x)">L (cm)<input type="number" data-param="largeur_palette" step="any"></label>
+              <label title="W du notebook (axe y) ; une BIPAL en compte le double">W (cm)<input type="number" data-param="longueur_palette" step="any"></label>
+              <label title="H du notebook">H (cm)<input type="number" data-param="hauteur_max" step="any"></label>
+            </div>
+          </div>
+          <div class="zone zone-rampe">
+            <h3>Rampe · emplacements 8 et 9</h3>
+            <label title="M du notebook (3 000 kg sur la rampe)">Charge maximale (kg) <small>M</small><input type="number" data-param="masse_max_rampe" step="any"></label>
+            <div class="grille-3">
+              <label title="L du notebook (axe x)">L (cm)<input type="number" data-param="largeur_rampe" step="any"></label>
+              <label title="W du notebook (axe y)">W (cm)<input type="number" data-param="longueur_rampe" step="any"></label>
+              <label title="H du notebook (la forme oblique de la rampe n'est pas modélisée)">H (cm)<input type="number" data-param="hauteur_max_rampe" step="any"></label>
+            </div>
+          </div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Règles du projet · en plus du notebook</legend>
+        <p class="aide">Désactivées par défaut : le notebook ne les connaît pas, et le résultat s'écarte alors du sien.</p>
+        <button type="button" class="secondaire petit" id="btn-regles-projet" title="Couloir de 14 cm par côté, colis IATA sur le bord, aucun colis lourd sur un colis plus léger">Appliquer les règles du projet</button>
+        <label title="Espace laissé libre pour le couloir sur chacun des deux côtés ; 0 = pas de couloir. Les colis de plus grande dimension sont placés dans la zone restante.">Couloir à laisser, par côté (cm)<input type="number" data-param="reduction_couloir" step="any" min="0"></label>
         <label title="Les deux extrémités de cet axe sont les côtés : le couloir y est laissé libre et les colis dangereux y sont accessibles. Le notebook utilise l'axe y.">Côtés du couloir et des colis IATA
-          <select data-param="axe_cotes"><option value="y">Axe y, 224 cm (notebook)</option><option value="x">Axe x, 274 cm</option></select></label>
-        <label title="Espace laissé libre pour le couloir sur chacun des deux côtés">Espace de couloir à laisser, par côté (cm)<input type="number" data-param="reduction_couloir" step="1" min="0"></label>
-        <label class="case"><input type="checkbox" data-param="derogation_couloir"> Dérogation : utiliser toute la largeur, sans couloir</label>
+          <select data-param="axe_cotes"><option value="y">Axe y (notebook)</option><option value="x">Axe x</option></select></label>
         <p class="aide" id="aide-largeur-utile"></p>
-        <label>Hauteur maximale (cm)<input type="number" data-param="hauteur_max" step="1"></label>
-        <label>Masse brute max en soute (kg)<input type="number" data-param="masse_max_soute" step="1"></label>
-        <label>Masse brute max sur la rampe (kg)<input type="number" data-param="masse_max_rampe" step="1"></label>
-        <label>Hauteur max sur la rampe (cm)<input type="number" data-param="hauteur_max_rampe" step="1"></label>
-        <label>Masse à vide d'une palette (kg)<input type="number" data-param="tare_palette" step="1"></label>
+        <label class="case" title="Un colis IATA doit être posé contre l'un des deux bords côté couloir, et rester visible depuis ce bord"><input type="checkbox" data-param="iata_au_bord"> Colis IATA posés sur le bord, côté couloir</label>
+        <label title="1,0 = un colis ne peut être posé que sur des colis au moins aussi lourds que lui ; 0 = pas de règle">Facteur masse dessus / dessous<input type="number" data-param="facteur_masse" step="any" min="0"></label>
+        <label title="Masse à vide d'une palette (130 kg pour une HCU-6/E), retirée de la charge maximale ; 0 = ignorée">Masse à vide d'une palette (kg)<input type="number" data-param="tare_palette" step="any" min="0"></label>
         <label class="case"><input type="checkbox" data-param="autoriser_bipal"> Autoriser les BIPAL (2 palettes accouplées)</label>
         <label class="case"><input type="checkbox" data-param="autoriser_tripal"> Autoriser les TRIPAL (3 palettes accouplées)</label>
+        <label>Tolérance de contact (cm)<input type="number" data-param="jeu_contact" step="any" min="0"></label>
       </fieldset>
       <fieldset>
         <legend>Avion</legend>
-        <label>Nombre de passagers<input type="number" data-param="passagers" step="1" min="0"></label>
+        <label>Nombre de passagers<input type="number" data-param="passagers" step="any" min="0"></label>
         <p class="aide" id="aide-passagers"></p>
-        <label>Emplacements en soute<input type="number" data-param="positions_soute" step="1" min="0"></label>
-        <label>Emplacements sur la rampe<input type="number" data-param="positions_rampe" step="1" min="0"></label>
-        <label>Masse forfaitaire par passager (kg)<input type="number" data-param="masse_passager" step="1"></label>
-        <label>Bagages par passager (kg)<input type="number" data-param="masse_bagages" step="1"></label>
-        <label>Capacité indicative de l'avion (kg)<input type="number" data-param="capacite_avion" step="100"></label>
-      </fieldset>
-      <fieldset>
-        <legend>Règles de confection</legend>
-        <label title="Fraction minimale de la base soutenue : support_minimal du notebook (80 %)">Support minimal de la base (%)<input type="number" data-param="support_minimal" data-pourcent="1" step="5" min="10" max="100"></label>
-        <label class="case" title="Un DAT sans conflit reste sur une palette ; un DAT contenant des classes incompatibles est divisé en sous-groupes compatibles (regrouper_par_DAT du notebook). Le moteur rapide de l'application ne l'applique pas."><input type="checkbox" data-param="regrouper_par_dat"> Regrouper les colis d'un même DAT</label>
-        <label title="1,0 = un colis ne peut être posé que sur des colis au moins aussi lourds que lui">Facteur masse dessus / dessous<input type="number" data-param="facteur_masse" step="0.1" min="0.1"></label>
-        <label class="case" title="Un colis IATA doit être posé contre l'un des deux bords côté couloir, et rester visible depuis ce bord"><input type="checkbox" data-param="iata_au_bord"> Colis IATA posés sur le bord, côté couloir</label>
-        <label title="Matières d'emballage que l'on ne doit pas écraser, séparées par des virgules (codes : carton, fibre, bois, metal, plastique, composite, palette)">Matières à ne pas écraser<input type="text" data-param="emballages_ecrasables" id="param-ecrasables"></label>
-        <label title="Masse maximale d'un colis posé sur un colis dans une matière à ne pas écraser. 0 = rien dessus.">Charge maximale sur ces matières (kg)<input type="number" data-param="charge_max_carton" step="1" min="0"></label>
-        <label>Tolérance de contact (cm)<input type="number" data-param="jeu_contact" step="0.1" min="0"></label>
-      </fieldset>
-      <fieldset>
-        <legend>Calcul</legend>
-        <label>Moteur<select data-param="moteur" id="select-moteur"></select></label>
-        <p class="aide" id="aide-moteur"></p>
-        <label title="Budget commun de la VND (transferts, replacements, échanges), comme temps_limite du notebook (180 s). Le temps total est plus long : heuristique, contrôles et tassement s'y ajoutent.">Budget de la VND (s)<input type="number" data-param="temps_limite" step="10" min="1" max="3600"></label>
-        <label title="Cinquième essai de l'heuristique : écart maximal de base au-dessus de la base minimale admissible (marge_hauteur du notebook)">Marge de hauteur du 5e essai (cm)<input type="number" data-param="marge_hauteur" step="1" min="0"></label>
-        <label title="Moteur rapide de l'application uniquement : budget des phases d'amélioration">Budget du moteur rapide (s)<input type="number" data-param="duree_recherche" step="1" min="1" max="600"></label>
-        <label>Graine aléatoire<input type="number" data-param="graine" step="1" min="0"></label>
+        <label>Masse forfaitaire par passager (kg)<input type="number" data-param="masse_passager" step="any"></label>
+        <label>Bagages par passager (kg)<input type="number" data-param="masse_bagages" step="any"></label>
+        <label>Capacité indicative de l'avion (kg)<input type="number" data-param="capacite_avion" step="any"></label>
       </fieldset>
     </div>
     <div class="boutons-dialogue">
-      <button type="button" class="lien" id="btn-params-defaut">Rétablir les valeurs par défaut</button>
+      <button type="button" class="lien" id="btn-params-defaut" title="Revient aux valeurs de la cellule 2 du notebook">Rétablir les valeurs du notebook</button>
       <span class="espace"></span>
       <button type="button" class="secondaire" id="btn-params-annuler">Annuler</button>
       <button type="submit" class="primaire" id="btn-params-ok">Enregistrer</button>

@@ -6,7 +6,8 @@ Deux moteurs, choisis par ``Parametres.moteur``
 * ``notebook`` (par défaut) : le code de CDP_5 repris tel quel dans ``notebook_cdp.py`` ; ce module n'en fait que la
   conversion et le journal. Phases : heuristique à cinq essais (avec regroupement par DAT), VND (transferts entre
   palettes, replacements plus bas, échanges), recentrage, tassement horizontal, chacune suivie d'un contrôle
-  indépendant. Les règles de l'application (lourd sur léger, cartons, fragiles, bord des colis IATA) y sont branchées.
+  indépendant. Les règles optionnelles de l'application (lourd sur léger, fragiles, bord des colis IATA) y sont
+  branchées ; elles sont désactivées par défaut, si bien que le résultat est celui du notebook.
 * ``heuristique`` : réimplémentation rapide de l'application, utilisée aussi quand le notebook ne sait pas traiter
   le problème (BIPAL, TRIPAL, très nombreux colis). Phases : placement heuristique multi-départ, fusion des
   palettes et tassement vertical (équivalent de la VND), recentrage, tassement horizontal. Elle n'applique pas le
@@ -18,8 +19,13 @@ Règles du projet
 Règle IATA du notebook, absolue à chaque phase : deux classes incompatibles (tableau 9.3.A, catégories A et B
 comprises) ne partagent jamais une palette et chaque colis à étiquette (classes IATA, armes ``A`` et pièces de
 sécurité ``B``) reste visible depuis au moins un des deux côtés (un autre colis ne le masque que si leurs projections
-se chevauchent sur l'autre axe et en z). Règles ajoutées par l'application : aucun colis lourd sur un colis plus
-léger, rien sur un colis fragile ou en carton, colis IATA contre un bord, BIPAL/TRIPAL, rampe.
+se chevauchent sur l'autre axe et en z). Règles optionnelles de l'application : aucun colis lourd sur un colis plus
+léger, rien sur un colis fragile, colis IATA contre un bord, couloir, BIPAL/TRIPAL. La matière de l'emballage n'est pas
+prise en compte, comme dans le notebook.
+
+Budget de temps : un seul paramètre, ``temps_limite`` (comme le notebook). Chaque phase qui a une recherche bornée en
+temps peut utiliser tout le budget ; les phases qui n'en ont pas (cinq essais de l'heuristique du notebook, recentrage,
+tassement horizontal, contrôles) se terminent d'elles-mêmes.
 
 Repère : cm et kg ; coin minimal (x1, y1, z1) de chaque colis ; x = 274 cm, y = 224 cm, z = vertical ; les côtés
 (couloir, accès) sont les extrémités de l'axe ``axe_cotes`` (y par défaut, comme le notebook).
@@ -34,6 +40,7 @@ from operator import itemgetter
 from time import perf_counter
 from typing import Iterable
 
+from .avion import attribuer_emplacements
 from .geometrie import TOL_VISIBLE, orientations, plafond_charge, tient_dans
 from .iata import ReglesSeparation, classe as classe_de, regles as regles_par_defaut
 from .modeles import Colis, Etape, Palette, Parametres, Placement, Resultat, TypePalette
@@ -130,7 +137,7 @@ def _dans_palette(b: _Boite, t: TypePalette) -> bool:
 
 
 def _support_ok(b: _Boite, boites: list[_Boite], params: Parametres, exclu: _Boite | None = None) -> bool:
-    """Support d'au moins ``support_minimal`` de la base, sans porteur trop léger, fragile ou en carton."""
+    """Support d'au moins ``support_minimal`` de la base, sans porteur trop léger (si demandé) ni fragile."""
     if b.z1 <= TOL:
         return True
     aire = 0.0
@@ -224,8 +231,8 @@ def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float
                      dx: float, dy: float, dz: float, params: Parametres) -> bool:
     """Un colis peut-il être posé en (x, y, z) sur la palette ? (masse et classes à tester à part)
 
-    Contrôle les limites, les collisions, le support, la charge admissible des porteurs (lourd/léger, fragile,
-    carton) et la règle IATA (visibilité et bord) du colis qu'on pose comme de ceux déjà en place."""
+    Contrôle les limites, les collisions, le support, la charge admissible des porteurs (lourd sur léger, fragile)
+    et la règle IATA (visibilité et bord) du colis qu'on pose comme de ceux déjà en place."""
     t = ch.type
     if x < -TOL or y < -TOL or z < -TOL or x + dx > t.largeur + TOL or y + dy > t.longueur + TOL \
             or z + dz > t.hauteur_max + TOL:
@@ -241,7 +248,7 @@ def _position_valide(ch: _Chargement, colis: Colis, x: float, y: float, z: float
                     return False
                 aire += (min(o.x2, x2) - max(o.x1, x)) * (min(o.y2, y2) - max(o.y1, y))
             if abs(o.z1 - z2) <= TOL and o.colis.masse > plafond_charge(colis, params) + TOL:
-                return False        # o reposerait sur ce colis (porte-à-faux) : trop lourd, fragile ou carton
+                return False        # o reposerait sur ce colis (porte-à-faux) : trop lourd, fragile
     if z > TOL and aire < params.support_minimal * dx * dy - TOL:
         return False
     if classe_de(colis.classe).visible or any(o.visible for o in ch.boites):
@@ -452,11 +459,11 @@ def _meilleure_position(ch: _Chargement, colis: Colis, orients: list[tuple[float
                         break
                     if z > TOL and abs(oz2 - z) <= TOL:
                         if m > oplafond + TOL:
-                            ok = False      # le porteur ne supporte pas ce colis : trop léger, fragile ou en carton
+                            ok = False      # le porteur ne supporte pas ce colis : trop léger ou fragile
                             break
                         aire += (min(ox2, x2) - max(ox1, x)) * (min(oy2, y2) - max(oy1, y))
                     if abs(oz1 - z2) <= TOL and om > plafond_colis + TOL:
-                        ok = False      # le colis déjà posé en o reposerait sur celui-ci (porte-à-faux) : trop lourd, fragile ou carton
+                        ok = False      # le colis déjà posé en o reposerait sur celui-ci (porte-à-faux) : trop lourd, fragile
                         break
                 elif variante == "contact" and oz1 < z2 - TOL and oz2 > z + TOL:
                     if (abs(ox2 - x) <= jeu or abs(ox1 - x2) <= jeu) and oy1 < y2 - TOL and oy2 > y + TOL:
@@ -518,10 +525,9 @@ def _type_requis(colis: Colis, types: list[TypePalette]) -> TypePalette | None:
     return None
 
 
-def _type_rampe(params: Parametres, base: TypePalette) -> TypePalette:
-    return TypePalette("10K", "Palette 10k (rampe)", base.largeur, base.longueur,
-                       min(base.hauteur_max, params.hauteur_max_rampe), params.masse_nette_max_rampe, 1,
-                       base.axe_cotes)
+def _type_rampe(params: Parametres, base: TypePalette | None = None) -> TypePalette:
+    """Format d'une palette de la rampe : ses dimensions et sa charge maximale propres (``base`` est ignoré)."""
+    return params.type_rampe()
 
 
 def _ordre_placement(a_placer: list[tuple[Colis, TypePalette]], params: Parametres, strat: Strategie,
@@ -596,8 +602,8 @@ def _construire(ordre: list[tuple[Colis, TypePalette]], params: Parametres, regl
             if limite_palettes is not None and len(chargements) >= limite_palettes:
                 return None
             type_ouvert, zone = type_force or type_min, zone_force
-            if type_force is None and positions >= params.positions_soute and type_min.positions == 1 \
-                    and params.positions_rampe > 0 and positions < params.positions_soute + params.positions_rampe:
+            if type_force is None and positions >= params.places_soute and type_min.positions == 1 \
+                    and params.places_rampe > 0 and positions < params.places_soute + params.places_rampe:
                 t_rampe = _type_rampe(params, type_min)
                 if colis.masse <= t_rampe.masse_max and tient_dans(colis, t_rampe.largeur, t_rampe.longueur,
                                                                    t_rampe.hauteur_max):
@@ -661,7 +667,8 @@ def strategies_deterministes() -> list[Strategie]:
 
 
 def _placement_heuristique(a_placer, params, regles, duree, rng):
-    """Phase 1 : essaie plusieurs stratégies pendant ``duree`` s et garde la meilleure construction."""
+    """Phase 1 : essaie plusieurs stratégies pendant au plus ``duree`` s (le budget commun) et garde la meilleure
+    construction ; s'arrête avant si plus rien ne s'améliore."""
     debut = perf_counter()
     cpt = _Compteur()
     strategies = strategies_deterministes()
@@ -690,8 +697,8 @@ def _placement_heuristique(a_placer, params, regles, duree, rng):
         ecoule = perf_counter() - debut
         if ecoule >= duree and (i >= 4 or ecoule >= 4 * duree):
             break
-        if i >= 2 * len(strategies) and sans_amelioration >= 300:
-            break
+        if i >= len(strategies) and sans_amelioration >= 100:
+            break       # plus aucune amélioration : inutile d'attendre la fin du budget
     return meilleur[0], meilleur[1], {"constructions": i, "positions_testees": cpt.positions,
                                       "essais": essais, "duree": perf_counter() - debut}
 
@@ -1101,7 +1108,7 @@ def _normaliser_zones(chs: list[_Chargement], params: Parametres) -> None:
     types = params.types_palettes()
     soute = sum(ch.type.positions for ch in chs if ch.zone == "soute")
     for ch in sorted((c for c in chs if c.zone == "rampe"), key=lambda c: -c.masse):
-        if soute + 1 <= params.positions_soute:
+        if soute + 1 <= params.places_soute:
             ch.type, ch.zone = types[0], "soute"
             soute += 1
     chs.sort(key=lambda c: (c.zone == "rampe", -c.masse))
@@ -1165,13 +1172,16 @@ def _preparer(colis: Iterable[Colis], params: Parametres):
 
 
 def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
-              regles: ReglesSeparation | None = None) -> Resultat:
+              regles: ReglesSeparation | None = None, progression=None) -> Resultat:
     """Confectionne les palettes.
 
     Moteur ``notebook`` (par défaut) : le code de CDP_5 (heuristique à cinq essais, VND, recentrage et tassement
     horizontal), avec les règles de l'application. Moteur ``heuristique`` : réimplémentation rapide de l'application.
     Le moteur du notebook cède la place à celui de l'application quand le notebook ne sait pas traiter le problème
     (BIPAL, TRIPAL, très nombreux colis) ou échoue ; le journal le signale.
+
+    ``progression(phase, budget)`` : fonction facultative, appelée au début de chaque phase (``heuristique``, ``vnd``,
+    ``recentrage``, ``tassement_horizontal``) avec le budget de la phase en secondes (ou ``None``).
     """
     params = params or Parametres()
     regles = regles or regles_par_defaut()
@@ -1191,7 +1201,7 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
                 essai = params if regrouper == params.regrouper_par_dat else replace(params, regrouper_par_dat=False)
                 try:
                     return _optimiser_notebook(notebook_cdp.Contexte(a_placer, essai, regles), non_places, params,
-                                               debut, note)
+                                               debut, note, progression)
                 except (RuntimeError, ValueError) as erreur:
                     if regrouper:
                         note += ("Le regroupement par DAT est impossible avec les règles actuelles (aucun des cinq essais "
@@ -1200,7 +1210,7 @@ def optimiser(colis: Iterable[Colis], params: Parametres | None = None,
                         note += f"Moteur du notebook abandonné ({erreur}) : moteur de l'application utilisé. "
         else:
             note = f"Moteur du notebook indisponible ({raison}) : moteur de l'application utilisé. "
-    return _optimiser_application(a_placer, non_places, params, regles, debut, note)
+    return _optimiser_application(a_placer, non_places, params, regles, debut, note, progression)
 
 
 def _resume_statistiques(stats: dict) -> str:
@@ -1209,10 +1219,11 @@ def _resume_statistiques(stats: dict) -> str:
                       for nom, s in stats.items())
 
 
-def _optimiser_notebook(nb, non_places: list, params: Parametres, debut: float, note: str = "") -> Resultat:
+def _optimiser_notebook(nb, non_places: list, params: Parametres, debut: float, note: str = "",
+                        progression=None) -> Resultat:
     """Pipeline de CDP_5 exécuté par le code du notebook : heuristique, VND, recentrage, tassement horizontal.
     ``params`` : réglages demandés (le regroupement par DAT a pu être relâché dans ``nb.params``)."""
-    sortie = nb.executer(max(1.0, params.temps_limite))
+    sortie = nb.executer(max(0.2, params.temps_limite), progression=progression)
     res, etapes_nb, temps, controles = sortie["resultat"], sortie["etapes"], sortie["temps"], sortie["controles"]
     chs = {nom: nb.vers_chargements(e) for nom, e in etapes_nb.items()}
     chs["finale"] = nb.vers_chargements(res)
@@ -1263,20 +1274,25 @@ def _optimiser_notebook(nb, non_places: list, params: Parametres, debut: float, 
         Etape("apres_vnd", "Phase 2 – après la VND", "Après les transferts, replacements et échanges de la VND.",
               _vers_palettes(chs["apres_vnd"])),
         Etape("finale", "Solution finale", "Après recentrage et tassement horizontal.", _vers_palettes(chs["finale"]))]
+    for e in etapes:
+        attribuer_emplacements(e.palettes, params)
     return Resultat(etapes[-1].palettes, non_places, params, perf_counter() - debut, len(heuristique["essais"]),
                     "notebook", "ok", etapes, journal)
 
 
 def _optimiser_application(a_placer, non_places: list, params: Parametres, regles: ReglesSeparation, debut: float,
-                           note: str = "") -> Resultat:
+                           note: str = "", progression=None) -> Resultat:
     """Moteur de l'application : heuristique multi-départ, fusion, tassement vertical, recentrage et tassement
     horizontal. Les phases de fusion et de tassement vertical correspondent à la VND du notebook."""
     rng = random.Random(params.graine)
     journal: list[dict] = []
-    duree = max(0.2, params.duree_recherche)
+    duree = max(0.2, params.temps_limite)      # budget commun : chaque phase peut l'utiliser en entier
+
+    signaler = progression or (lambda phase, budget=None: None)
 
     # ---- Phase 1 : placement heuristique --------------------------------------------------
-    chs, echecs, info = _placement_heuristique(a_placer, params, regles, 0.5 * duree, rng)
+    signaler("heuristique", duree)
+    chs, echecs, info = _placement_heuristique(a_placer, params, regles, duree, rng)
     essais = " ; ".join(f"{e['strategie']} → {e['palettes']} palette(s), {e['hauteur']:.0f} cm" for e in info["essais"])
     journal.append(_entree_journal(
         1, "Placement heuristique", info["duree"],
@@ -1291,10 +1307,11 @@ def _optimiser_application(a_placer, non_places: list, params: Parametres, regle
 
     # ---- Phase 2 : fusion des palettes et tassement vertical (équivalent de la VND) -----------
     t0 = perf_counter()
+    signaler("vnd", duree)
     avant_fusion = len(chs)
-    stats = _fusionner(chs, params, regles, 0.15 * duree)
+    stats = _fusionner(chs, params, regles, duree)
     _normaliser_zones(chs, params)
-    vert = _tasser_vertical(chs, params, 0.25 * duree)
+    vert = _tasser_vertical(chs, params, duree)
     texte = (f"Fusion : {stats['colis_transferes']} colis déplacé(s), {stats['fusions_reussies']} palette(s) vidée(s) "
              f"({avant_fusion} → {len(chs)}), {stats['paires_testees']}/{stats['paires_planifiees']} paire(s) "
              f"traitée(s), {stats['emplacements_testes']} emplacement(s) testés. Tassement vertical : "
@@ -1311,11 +1328,13 @@ def _optimiser_application(a_placer, non_places: list, params: Parametres, regle
 
     # ---- Phase 3 : recentrage, phase 4 : tassement horizontal -----------------------------------
     t0 = perf_counter()
+    signaler("recentrage", None)
     _recentrer(chs, params)
     journal.append(_entree_journal(3, "Recentrage", perf_counter() - t0,
                                    "Translation rigide de chaque tas vers le centre de la palette, sans changer ses "
                                    "contacts.", chs))
     t0 = perf_counter()
+    signaler("tassement_horizontal", None)
     tass = _tasser(chs, params)
     _normaliser_zones(chs, params)
     palettes = _vers_palettes(chs)
@@ -1327,5 +1346,7 @@ def _optimiser_application(a_placer, non_places: list, params: Parametres, regle
         f"{max((c.hauteur for c in chs), default=0.0):.1f} cm, somme des hauteurs {sum(c.hauteur for c in chs):.1f} cm. "
         "Les hauteurs sont améliorées géométriquement, sans preuve de minimum.", chs))
     etapes.append(Etape("finale", "Solution finale", "Après recentrage et tassement horizontal.", palettes))
+    for e in etapes:
+        attribuer_emplacements(e.palettes, params)
     return Resultat(palettes, non_places, params, perf_counter() - debut, info["constructions"], "heuristique", "ok",
                     etapes, journal)

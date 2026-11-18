@@ -9,10 +9,15 @@ Repère d'une palette : origine au coin de la zone utile, mêmes axes que le not
 - axe Z : vers le haut.
 
 Côtés : les deux extrémités de l'axe ``axe_cotes`` sont le côté « gauche » (coordonnée minimale) et le côté « droite »
-(coordonnée maximale). Le notebook CDP_3 vérifie la visibilité des colis dangereux depuis ces côtés « de largeur »,
-c'est-à-dire sur l'axe Y (valeur par défaut). C'est aussi là que se trouve le couloir : on y laisse 14 cm par côté
-(``reduction_couloir``), et un colis dangereux est posé contre l'un de ces deux bords. L'axe X peut être choisi à la
-place avec ``axe_cotes="x"``.
+(coordonnée maximale). Le notebook vérifie la visibilité des colis dangereux depuis ces côtés « de largeur »,
+c'est-à-dire sur l'axe Y (valeur par défaut). C'est aussi là que se trouve le couloir, quand on en demande un
+(``reduction_couloir``, 14 cm par côté dans le projet, 0 par défaut comme dans le notebook). L'axe X peut être choisi à
+la place avec ``axe_cotes="x"``.
+
+Paramètres par défaut : ceux de la cellule 2 du notebook (``regrouper_par_DAT``, ``temps_limite``, ``support_minimal``,
+``marge_hauteur`` et les palettes : 7 emplacements en soute de 4 536 kg et 2 sur la rampe de 3 000 kg, tous de
+2,74 x 2,24 x 2,54 m). Les règles propres à l'application (couloir, IATA au bord, lourd sur léger) sont
+désactivées par défaut : l'application donne alors le même résultat que le notebook.
 
 Règle IATA (notebook CDP_3) : un colis dangereux reste visible depuis l'un des deux côtés, c'est-à-dire qu'aucun autre
 colis ne le masque de ce côté (projections qui se chevauchent sur les deux autres axes et colis qui le dépasse).
@@ -179,6 +184,7 @@ class Palette:
     type: TypePalette
     placements: list[Placement] = field(default_factory=list)
     zone: str = "soute"     # "soute" ou "rampe"
+    emplacements: list[int] = field(default_factory=list)   # numéros des emplacements de l'avion occupés (1 à 9)
 
     @property
     def masse(self) -> float:
@@ -239,6 +245,7 @@ class Palette:
             "masse_max": self.type.masse_max,
             "positions": self.type.positions,
             "zone": self.zone,
+            "emplacements": list(self.emplacements),
             "masse": round(self.masse, 1),
             "masse_brute": round(self.masse + tare * self.type.positions, 1),
             "hauteur": round(self.hauteur, 1),
@@ -257,58 +264,102 @@ class Palette:
 
 @dataclass
 class Parametres:
-    """Paramètres de l'avion, des palettes et de l'algorithme (valeurs par défaut A400M)."""
+    """Paramètres du calcul, des palettes et de l'avion. Les valeurs par défaut sont celles de la cellule 2 du notebook."""
 
-    # Palette 10k : 274 cm sur l'axe X et 224 cm sur l'axe Y (L = 2,74 m et W = 2,24 m dans le notebook). Le couloir est
-    # sur les deux côtés de l'axe ``axe_cotes`` (Y par défaut, comme la visibilité IATA du notebook) : on y laisse
-    # 14 cm de chaque côté, sauf dérogation.
+    # ---- Cellule 2 du notebook ------------------------------------------------------------------------------------
+    regrouper_par_dat: bool = True       # ``regrouper_par_DAT`` : un DAT sans conflit reste sur une seule palette
+    temps_limite: float = 180.0          # secondes : ``temps_limite``, budget commun ; chaque phase peut l'utiliser en entier
+    support_minimal: float = 0.80        # ``support_minimal`` : part de la base qui doit reposer sur quelque chose
+    marge_hauteur: float = 5.0           # cm : ``marge_hauteur`` (0,05 m), écart maximal de base du cinquième essai
+
+    # Palettes de la soute (emplacements 1 à 7) : L = 2,74 m sur l'axe X, W = 2,24 m sur l'axe Y, H = 2,54 m, M = 4 536 kg.
     largeur_palette: float = 274.0       # axe X
     longueur_palette: float = 224.0      # axe Y, par emplacement (BIPAL : 2 x, TRIPAL : 3 x)
-    reduction_couloir: float = 14.0
-    derogation_couloir: bool = False
-    axe_cotes: str = "y"                 # axe des côtés (couloir et accès IATA) : "y" comme le notebook, ou "x"
-    hauteur_max: float = 254.0           # cm : 2,54 m, hauteur des palettes du notebook CDP_3
-    masse_max_soute: float = 4536.0      # kg, masse brute maximale d'une 10k en soute
-    masse_max_rampe: float = 3000.0      # kg, masse brute maximale sur la rampe
-    tare_palette: float = 130.0          # kg, masse à vide d'une palette 10k (HCU-6/E)
+    hauteur_max: float = 254.0           # cm
+    masse_max_soute: float = 4536.0      # kg : charge maximale d'une palette de la soute
+    # Palettes de la rampe (emplacements 8 et 9) : mêmes dimensions, mais seulement 3 000 kg.
+    largeur_rampe: float = 274.0         # axe X
+    longueur_rampe: float = 224.0        # axe Y
     hauteur_max_rampe: float = 254.0     # cm (forme oblique de la rampe non modélisée)
-    autoriser_bipal: bool = True
-    autoriser_tripal: bool = True
-
-    # Avion
+    masse_max_rampe: float = 3000.0      # kg
     positions_soute: int = 7
     positions_rampe: int = 2
+    emplacements_indisponibles: list = field(default_factory=list)   # numéros (1 à 9) des emplacements non utilisables
+
+    # ---- Règles propres à l'application (désactivées par défaut : le notebook ne les connaît pas) -----------------
+    reduction_couloir: float = 0.0       # cm laissés libres de chaque côté (14 dans le projet) ; 0 = pas de couloir
+    axe_cotes: str = "y"                 # axe des côtés (couloir et accès IATA) : "y" comme le notebook, ou "x"
+    iata_au_bord: bool = False           # colis IATA contre un bord côté couloir (en plus de la règle de visibilité)
+    facteur_masse: float = 0.0           # un colis posé doit avoir masse <= facteur x masse du support ; 0 = pas de règle
+    tare_palette: float = 0.0            # kg, masse à vide d'une palette (130 kg pour une HCU-6/E) retirée de la charge
+    autoriser_bipal: bool = True         # formats pour les colis plus grands qu'une palette (hors notebook)
+    autoriser_tripal: bool = True
+    jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
+
+    # ---- Avion -------------------------------------------------------------------------------------------------
     passagers: int = 0
     masse_passager: float = 90.0
     masse_bagages: float = 40.0          # 2 x 20 kg
     capacite_avion: float = 30000.0      # kg, charge marchande approximative
 
-    # Règles de confection
-    support_minimal: float = 0.80        # part de la base qui doit reposer sur quelque chose (``support_minimal`` du notebook)
-    facteur_masse: float = 1.0           # un colis posé doit avoir masse <= facteur x masse du support
-    iata_au_bord: bool = True            # colis IATA contre un bord côté couloir (en plus de la règle de visibilité)
-    emballages_ecrasables: str = field(default_factory=lambda: ",".join(emballages().codes_ecrasables()))
-    # matières d'emballage à ne pas écraser, codes séparés par des virgules (carton et fibre par défaut)
-    charge_max_carton: float = 0.0       # kg : masse maximale d'un colis posé sur un colis dans une de ces matières (0 = rien dessus)
-    jeu_contact: float = 0.5             # cm, tolérance pour considérer deux faces en contact
-
-    # Algorithme
+    # ---- Algorithme ---------------------------------------------------------------------------------------------
     moteur: str = "notebook"             # "notebook" : code de CDP_5 ; "heuristique" : moteur rapide de l'application
-    regrouper_par_dat: bool = True       # ``regrouper_par_DAT`` du notebook : un DAT sans conflit reste sur une palette
-    marge_hauteur: float = 5.0           # cm : écart maximal de base du cinquième essai de l'heuristique (``marge_hauteur``)
-    temps_limite: float = 60.0           # secondes : budget commun de la VND (``temps_limite`` du notebook, 180 s)
-    duree_recherche: float = 4.0         # secondes : budget du moteur de l'application (hors notebook)
     graine: int = 0
 
-    def emballage_ecrasable(self, code: str) -> bool:
-        """Le colis dans cette matière d'emballage ne doit-il pas être écrasé ?"""
-        return bool(code) and code in {c.strip() for c in self.emballages_ecrasables.split(",")}
+    # ---- Emplacements de l'avion ----------------------------------------------------------------------------------
+    def numeros_emplacements(self, zone: str | None = None) -> list[int]:
+        """Numéros des emplacements : 1 à ``positions_soute`` en soute, puis ceux de la rampe."""
+        soute = list(range(1, self.positions_soute + 1))
+        rampe = list(range(self.positions_soute + 1, self.positions_soute + self.positions_rampe + 1))
+        return soute if zone == "soute" else rampe if zone == "rampe" else soute + rampe
 
+    def zone_emplacement(self, numero: int) -> str:
+        return "soute" if numero <= self.positions_soute else "rampe"
+
+    def emplacements_marques(self) -> set[int]:
+        """Emplacements déclarés indisponibles (liste ou texte « 1, 2 » acceptés)."""
+        valeur = self.emplacements_indisponibles
+        if isinstance(valeur, str):
+            valeur = [v for v in valeur.replace(";", ",").split(",") if v.strip()]
+        marques = set()
+        for v in valeur or []:
+            try:
+                marques.add(int(float(v)))
+            except (TypeError, ValueError):
+                pass
+        return marques
+
+    def emplacements_passagers(self) -> list[int]:
+        """Emplacements pris par les sièges quand il y a beaucoup de passagers : ceux de l'avant de la soute (numéros
+        les plus petits) parmi les emplacements encore libres. Hypothèse d'implantation, modifiable à la main."""
+        from .avion import limite_passagers
+        libres = [n for n in self.numeros_emplacements() if n not in self.emplacements_marques()]
+        exces = len(libres) - limite_passagers(self.passagers, len(self.numeros_emplacements()))
+        return libres[:exces] if exces > 0 else []
+
+    def emplacements_libres(self, zone: str | None = None) -> list[int]:
+        """Emplacements utilisables, dans l'ordre : ni déclarés indisponibles, ni pris par les sièges des passagers."""
+        pris = self.emplacements_marques() | set(self.emplacements_passagers())
+        return [n for n in self.numeros_emplacements(zone) if n not in pris]
+
+    @property
+    def places_soute(self) -> int:
+        return len(self.emplacements_libres("soute"))
+
+    @property
+    def places_rampe(self) -> int:
+        return len(self.emplacements_libres("rampe"))
+
+    def plafond_relatif(self, masse: float) -> float:
+        """Masse maximale (kg) posable sur un colis de ``masse`` kg, selon ``facteur_masse`` (0 : pas de règle)."""
+        return self.facteur_masse * masse if self.facteur_masse > 0 else float("inf")
+
+    # ---- Dimensions ------------------------------------------------------------------------------------------------
     def _reduction(self, axe: str) -> float:
         """Réduction (cm, total des deux côtés) de l'étendue selon l'axe donné."""
-        if self.derogation_couloir or axe != self.axe_cotes:
+        if axe != self.axe_cotes:
             return 0.0
-        return 2 * self.reduction_couloir
+        return 2 * max(0.0, self.reduction_couloir)
 
     @property
     def largeur_utile(self) -> float:
@@ -334,7 +385,7 @@ class Parametres:
         return max(0.0, self.masse_max_rampe - self.tare_palette)
 
     def types_palettes(self) -> list[TypePalette]:
-        """Les formats de palette disponibles, du plus petit au plus grand."""
+        """Les formats de palette disponibles en soute, du plus petit au plus grand."""
         axe = "x" if self.axe_cotes == "x" else "y"
         formats = [TypePalette("10K", "Palette 10k", self.largeur_utile, self.longueur_utile_pour(1),
                                self.hauteur_max, self.masse_nette_max_soute, 1, axe)]
@@ -347,6 +398,13 @@ class Parametres:
                                        self.longueur_utile_pour(3), self.hauteur_max,
                                        3 * self.masse_nette_max_soute, 3, axe))
         return formats
+
+    def type_rampe(self) -> TypePalette:
+        """Palette d'un emplacement de la rampe : ses propres dimensions et sa propre charge maximale."""
+        axe = "x" if self.axe_cotes == "x" else "y"
+        return TypePalette("10K", "Palette 10k (rampe)", max(0.0, self.largeur_rampe - self._reduction("x")),
+                           max(0.0, self.longueur_rampe - self._reduction("y")), self.hauteur_max_rampe,
+                           self.masse_nette_max_rampe, 1, axe)
 
     @staticmethod
     def depuis_dict(d: dict[str, Any] | None) -> "Parametres":
@@ -368,10 +426,17 @@ class Parametres:
                     if isinstance(valeur, str):
                         valeur = valeur.replace(",", ".")
                     setattr(p, cle, float(valeur))
+                elif isinstance(actuel, list):
+                    if isinstance(valeur, str):
+                        valeur = [v for v in valeur.replace(";", ",").split(",") if v.strip()]
+                    setattr(p, cle, sorted({int(float(v)) for v in valeur}))
                 else:
                     setattr(p, cle, str(valeur))
             except (TypeError, ValueError):
                 pass  # on conserve la valeur par défaut
+        # Projets enregistrés avec l'ancienne dérogation au couloir : pas de couloir.
+        if d.get("derogation_couloir"):
+            p.reduction_couloir = 0.0
         return p
 
     def vers_dict(self) -> dict[str, Any]:

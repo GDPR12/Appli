@@ -1,5 +1,7 @@
 /* ===================== Palettisation A400M – logique de l'interface ===================== */
 import { Vue3D, couleurPoids } from './vue3d.js';
+import { initialiserSeparateurs } from './separateurs.js';
+import { dessinerPlanSoute, emplacementsPlan } from './plan_soute.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -15,7 +17,10 @@ const etat = {
   mode: 'categories',
   selection: null,       // {numero, palette}
   edition: null,         // index du colis en cours de modification
+  perime: false,         // la liste ou les paramètres ont changé depuis le dernier calcul
 };
+let brouillonIndispo = new Set();   // emplacements déclarés indisponibles dans la boîte de dialogue des paramètres
+const PARAMETRES_OBSOLETES = ['derogation_couloir', 'duree_recherche', 'emballages_ecrasables', 'charge_max_carton'];
 
 let vue = null;
 
@@ -45,15 +50,16 @@ async function api(route, corps) {
 function sauvegarderLocal() {
   try {
     localStorage.setItem('palettiseur.colis', JSON.stringify(etat.colis));
-    localStorage.setItem('palettiseur.parametres.v4', JSON.stringify(etat.parametres));
+    localStorage.setItem('palettiseur.parametres.v5', JSON.stringify(etat.parametres));
   } catch (e) { /* stockage indisponible : on ignore */ }
 }
 function chargerLocal() {
   try {
     const c = localStorage.getItem('palettiseur.colis');
     if (c) etat.colis = JSON.parse(c).map(({ renversable, ...reste }) => reste);
-    const p = localStorage.getItem('palettiseur.parametres.v4');
+    const p = localStorage.getItem('palettiseur.parametres.v5');
     if (p) etat.parametres = { ...etat.parametres, ...JSON.parse(p) };
+    for (const k of PARAMETRES_OBSOLETES) delete etat.parametres[k];
   } catch (e) { /* ignore */ }
 }
 /** Données de l'étape affichée : palettes, vérification et bilan de cette étape, reste du résultat commun. */
@@ -62,7 +68,7 @@ function donnees() {
   if (!res) return null;
   if (etat.etape === 'finale') return res;
   const e = (res.etapes || []).find((x) => x.cle === etat.etape);
-  return e && e.palettes ? { ...res, palettes: e.palettes, verification: e.verification, bilan: e.bilan } : res;
+  return e && e.palettes ? { ...res, palettes: e.palettes, verification: e.verification, bilan: e.bilan, indicateurs: e.indicateurs } : res;
 }
 function chipClasse(code) {
   const cl = etat.classes[code];
@@ -148,7 +154,7 @@ function majAideClasse() {
   let txt = cl.description ? cl.description + ' ' : '';
   if (cl.iata) txt += etat.parametres.iata_au_bord
     ? 'Étiquette IATA : le colis est posé contre l\'un des deux bords côté couloir et reste visible depuis ce bord. '
-    : 'Étiquette IATA : le colis reste visible depuis au moins un des deux côtés du couloir. ';
+    : 'Étiquette IATA : le colis reste visible depuis au moins un des deux côtés de la palette. ';
   txt += incomp.length ? `Jamais sur la même palette que : ${incomp.join(', ')}.` : 'Compatible avec toutes les autres classes.';
   aide.textContent = txt;
 }
@@ -158,7 +164,7 @@ function surSoumission(e) {
   const zoneErreur = $('#erreur-formulaire');
   if (erreurs.length) { zoneErreur.textContent = 'Corrigez : ' + erreurs.join(' ; ') + '.'; zoneErreur.hidden = false; return; }
   if (etat.edition !== null) etat.colis[etat.edition] = colis; else etat.colis.push(colis);
-  sauvegarderLocal();
+  sauvegarderLocal(); marquerPerime();
   afficherListe();
   reinitialiserFormulaire();
   $('#f-longueur').focus();
@@ -171,34 +177,127 @@ function palettesDuColis(c) {
   const nums = c.quantite > 1 ? Array.from({ length: c.quantite }, (_, k) => `${c.numero}-${k + 1}`) : [c.numero];
   return nums.map((n) => index[n] ?? '—');
 }
-function afficherListe() {
-  const corps = $('#table-colis tbody');
-  corps.innerHTML = '';
+function optionsClasse(courante) {
+  return etat.config.classes.map((cl) => `<option value="${echapper(cl.code)}"${cl.code === (courante || '') ? ' selected' : ''}>${echapper(cl.code || '—')}</option>`).join('');
+}
+function couleurClasse(code) {
+  return etat.classes[code]?.couleur || etat.classes['']?.couleur || '#b8c2cc';
+}
+function majTotaux() {
   let masse = 0, volume = 0, nb = 0;
-  etat.colis.forEach((c, i) => {
+  for (const c of etat.colis) {
     const q = c.quantite || 1;
     masse += c.masse * q; volume += c.longueur * c.largeur * c.hauteur * q / 1e6; nb += q;
-    const tr = document.createElement('tr');
-    tr.className = 'ligne-colis' + (etat.selection && etat.selection.base === c.numero ? ' selectionnee' : '');
-    tr.dataset.index = i;
-    const pals = palettesDuColis(c);
-    const palTxt = pals.length ? [...new Set(pals)].map((p) => (p === '—' ? '<span class="danger">non placé</span>' : `P${p}`)).join(', ') : '';
-    tr.innerHTML = `
-      <td><span class="num">${echapper(c.numero)}</span>${q > 1 ? `<span class="qte" title="Quantité">×${q}</span>` : ''}${c.dat ? `<span class="commentaire" title="DAT">${echapper(c.dat)}</span>` : ''}${c.commentaire ? `<span class="commentaire">${echapper(c.commentaire)}</span>` : ''}</td>
-      <td>${nombre(c.longueur, 1)}×${nombre(c.largeur, 1)}×${nombre(c.hauteur, 1)}</td>
-      <td>${nombre(c.masse, 1)}</td>
-      <td title="${echapper(libelleEmballage(c.emballage))}">${echapper(libelleEmballageCourt(c.emballage))}${c.fragile ? ' <span title="Fragile : rien dessus">🥚</span>' : ''}</td>
-      <td>${chipClasse(c.classe)}</td>
-      <td>${palTxt}</td>
-      <td class="actions-ligne"><button class="lien" data-action="editer" title="Modifier">✎</button><button class="lien danger" data-action="supprimer" title="Supprimer">🗑</button></td>`;
-    corps.appendChild(tr);
-  });
+  }
   $('#compteur-colis').textContent = nb;
   $('#liste-vide').hidden = etat.colis.length > 0;
   $('#masse-totale').textContent = `${nombre(masse, 1)} kg`;
   $('#volume-total').textContent = `${nombre(volume, 2)} m³`;
 }
+function marquerPerime() {
+  if (!etat.resultat) return;
+  etat.perime = true;
+  $('#bilan-perime').hidden = false;
+}
+function afficherListe() {
+  const corps = $('#table-colis tbody');
+  corps.innerHTML = '';
+  etat.colis.forEach((c, i) => {
+    const q = c.quantite || 1;
+    const tr = document.createElement('tr');
+    tr.className = 'ligne-colis' + (etat.selection && etat.selection.base === c.numero ? ' selectionnee' : '');
+    tr.dataset.index = i;
+    const pals = palettesDuColis(c);
+    const palTxt = pals.length ? [...new Set(pals)].map((p) => (p === '—' ? '<span class="danger">non placé</span>' : `P${p}`)).join(', ') : '';
+    const info = [c.commentaire, c.emballage ? `emballage : ${libelleEmballage(c.emballage)}` : '', c.reference ? `n° de série ${c.reference}` : ''].filter(Boolean).join(' · ');
+    const nb = (champ, valeur, pas, min, titre) => `<td class="c-nb"><input class="edit" type="number" data-champ="${champ}" value="${valeur}" step="${pas}" min="${min}" aria-label="${titre}" title="${titre}"></td>`;
+    tr.innerHTML = `
+      <td class="c-num"><span class="puce" style="background:${couleurClasse(c.classe)}" title="${echapper(libelleClasse(c.classe))}"></span><input class="edit" type="text" data-champ="numero" value="${echapper(c.numero)}" aria-label="Numéro" title="${echapper(info || 'Numéro du colis')}"></td>
+      <td class="c-qte"><input class="edit" type="number" data-champ="quantite" value="${q}" step="1" min="1" aria-label="Quantité" title="Quantité"></td>
+      ${nb('longueur', c.longueur, 0.5, 0.1, 'Longueur (cm)')}${nb('largeur', c.largeur, 0.5, 0.1, 'Largeur (cm)')}${nb('hauteur', c.hauteur, 0.5, 0.1, 'Hauteur (cm)')}${nb('masse', c.masse, 0.1, 0.1, 'Masse (kg)')}
+      <td class="c-classe"><select class="edit" data-champ="classe" aria-label="Classe" title="${echapper(libelleClasse(c.classe))}">${optionsClasse(c.classe)}</select></td>
+      <td class="c-fragile"><input type="checkbox" data-champ="fragile" aria-label="Fragile" title="Fragile : rien dessus"${c.fragile ? ' checked' : ''}></td>
+      <td class="c-dat"><input class="edit" type="text" data-champ="dat" value="${echapper(c.dat || '')}" placeholder="—" aria-label="DAT" title="DAT"></td>
+      <td class="c-palette">${palTxt}</td>
+      <td class="actions-ligne"><button class="lien" data-action="editer" title="Modifier tous les champs (commentaire, emballage…)">✎</button><button class="lien danger" data-action="supprimer" title="Supprimer">🗑</button></td>`;
+    corps.appendChild(tr);
+  });
+  majTotaux();
+}
+function erreurListe(message) {
+  const z = $('#erreur-liste');
+  z.textContent = message || '';
+  z.hidden = !message;
+  clearTimeout(erreurListe._t);
+  if (message) erreurListe._t = setTimeout(() => { z.hidden = true; }, 6000);
+}
+/** Vérifie la valeur saisie dans une case de la liste ; retourne la valeur à enregistrer ou lève une erreur lisible. */
+function valeurChamp(champ, el, i) {
+  const brut = el.type === 'checkbox' ? el.checked : el.value.trim();
+  if (champ === 'fragile') return !!brut;
+  if (champ === 'classe' || champ === 'dat') return String(brut);
+  if (champ === 'numero') {
+    if (!brut) throw new Error('le numéro est obligatoire');
+    if (etat.colis.some((x, k) => k !== i && x.numero === brut)) throw new Error(`le numéro « ${brut} » existe déjà`);
+    return brut;
+  }
+  const v = parseFloat(String(brut).replace(',', '.'));
+  const noms = { longueur: 'la longueur', largeur: 'la largeur', hauteur: 'la hauteur', masse: 'la masse', quantite: 'la quantité' };
+  if (!(v > 0)) throw new Error(`${noms[champ]} doit être un nombre positif`);
+  if (champ === 'quantite') {
+    if (!Number.isInteger(v)) throw new Error('la quantité doit être un nombre entier');
+    return v;
+  }
+  return v;
+}
+function surModifListe(e) {
+  const el = e.target.closest('[data-champ]');
+  const tr = e.target.closest('tr.ligne-colis');
+  if (!el || !tr) return;
+  const i = parseInt(tr.dataset.index, 10);
+  const champ = el.dataset.champ;
+  const c = etat.colis[i];
+  try {
+    const valeur = valeurChamp(champ, el, i);
+    if (valeur === (c[champ] ?? (champ === 'quantite' ? 1 : champ === 'fragile' ? false : ''))) { erreurListe(''); return; }
+    const ancienNumero = c.numero;
+    c[champ] = valeur;
+    erreurListe('');
+    if (champ === 'classe') {
+      const puce = tr.querySelector('.puce');
+      puce.style.background = couleurClasse(valeur); puce.title = libelleClasse(valeur);
+      el.title = libelleClasse(valeur);
+    }
+    if (champ === 'numero' && etat.selection && etat.selection.base === ancienNumero) etat.selection = null;
+    if (etat.edition === i) remplirFormulaire(c);
+    sauvegarderLocal(); majTotaux(); marquerPerime();
+  } catch (erreur) {
+    // valeur refusée : on remet l'ancienne et on le signale un instant
+    const ancien = el.type === 'checkbox' ? !el.checked : (c[champ] ?? '');
+    if (el.type === 'checkbox') el.checked = ancien; else el.value = ancien;
+    el.classList.add('invalide');
+    setTimeout(() => el.classList.remove('invalide'), 1600);
+    erreurListe(`Colis ${c.numero} : ${erreur.message}.`);
+  }
+}
+function surToucheListe(e) {
+  const el = e.target.closest('input.edit');
+  const tr = e.target.closest('tr.ligne-colis');
+  if (!el || !tr) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const suivante = (e.shiftKey ? tr.previousElementSibling : tr.nextElementSibling)?.querySelector(`[data-champ="${el.dataset.champ}"]`);
+    el.blur();                                  // valide la case (événement change), puis passe au colis suivant
+    if (suivante) { suivante.focus(); suivante.select?.(); }
+  } else if (e.key === 'Escape') {
+    e.stopPropagation();
+    const c = etat.colis[parseInt(tr.dataset.index, 10)];
+    el.value = c[el.dataset.champ] ?? (el.dataset.champ === 'quantite' ? 1 : '');
+    el.blur();
+  }
+}
 function surClicListe(e) {
+  if (e.target.closest('input, select')) return;              // on édite une case : pas de sélection dans la vue 3D
   const tr = e.target.closest('tr.ligne-colis');
   if (!tr) return;
   const i = parseInt(tr.dataset.index, 10);
@@ -206,7 +305,7 @@ function surClicListe(e) {
   if (action === 'supprimer') {
     etat.colis.splice(i, 1);
     if (etat.edition === i) reinitialiserFormulaire();
-    sauvegarderLocal(); afficherListe(); return;
+    sauvegarderLocal(); marquerPerime(); afficherListe(); return;
   }
   if (action === 'editer') {
     etat.edition = i;
@@ -233,9 +332,11 @@ function ouvrirParametres() {
     else if (el.dataset.pourcent) el.value = Math.round(v * 100);
     else el.value = v;
   }
+  brouillonIndispo = new Set((etat.parametres.emplacements_indisponibles || []).map(Number));
   majAidePassagers();
   majAideMoteur();
   majAideLargeurUtile();
+  majPlanParametres();
   $('#dlg-parametres').showModal();
 }
 function lireParametres() {
@@ -247,31 +348,32 @@ function lireParametres() {
     else if (el.dataset.pourcent) p[k] = parseFloat(el.value) / 100;
     else p[k] = parseFloat(el.value);
   }
+  p.emplacements_indisponibles = [...brouillonIndispo].sort((a, b) => a - b);
   return p;
 }
 function majAideLargeurUtile() {
   const val = (k) => parseFloat($(`[data-param=${k}]`).value) || 0;
   const axe = $('[data-param=axe_cotes]').value === 'x' ? 'x' : 'y';
-  const derog = $('[data-param=derogation_couloir]').checked;
-  const r = derog ? 0 : 2 * val('reduction_couloir');
+  const couloir = val('reduction_couloir');
+  const r = 2 * couloir;
   const ux = val('largeur_palette') - (axe === 'x' ? r : 0), uy = val('longueur_palette') - (axe === 'y' ? r : 0);
-  $('#aide-largeur-utile').textContent = derog
-    ? `Zone utile : ${nombre(ux)} × ${nombre(uy)} cm (x × y), sans couloir.`
-    : `Zone utile : ${nombre(ux)} × ${nombre(uy)} cm (x × y) : couloir de ${nombre(val('reduction_couloir'))} cm de chaque côté, sur l'axe ${axe}.`;
+  $('#aide-largeur-utile').textContent = couloir > 0
+    ? `Zone utile d'une palette de soute : ${nombre(ux)} × ${nombre(uy)} cm (x × y) : couloir de ${nombre(couloir)} cm de chaque côté, sur l'axe ${axe}.`
+    : `Zone utile d'une palette de soute : ${nombre(ux)} × ${nombre(uy)} cm (x × y), sans couloir (comme le notebook).`;
 }
 function majAidePassagers() {
   const pax = parseInt($('[data-param=passagers]').value || '0', 10);
   let positions = 0;
   for (const v of etat.config.versions_avion) { if (pax <= v.passagers_max) { positions = v.palettes; break; } }
   $('#aide-passagers').textContent = pax > 116 ? 'Plus de 116 passagers : aucun emplacement de palette (version tout passagers).'
-    : `Version A400M : ${positions} emplacement(s) de palette disponibles pour ${pax} passager(s).`;
+    : `Version A400M : ${positions} emplacement(s) de palette au plus pour ${pax} passager(s) ; les sièges prennent les emplacements de l'avant.`;
 }
 function majAideMoteur() {
   const code = $('#select-moteur').value;
   const m = etat.config.moteurs.find((x) => x.code === code);
   $('#aide-moteur').textContent = !m ? '' : m.code === 'notebook'
-    ? 'Le code de CDP_5 exécuté tel quel : cinq essais d\'heuristique, puis la VND (transferts, replacements, échanges) pendant le budget indiqué, puis recentrage et tassement horizontal, avec un contrôle indépendant après chaque phase. Plus lent (le notebook n\'est pas optimisé). Indisponible avec BIPAL / TRIPAL ou au-delà de 150 colis : le moteur rapide prend alors le relais.'
-    : 'Réimplémentation rapide de l\'application : heuristique multi-départ, fusion, tassement vertical, recentrage et tassement horizontal. Quelques secondes ; pas de regroupement par DAT.';
+    ? 'Le code de CDP_5 exécuté tel quel : cinq essais d\'heuristique, puis la VND (transferts, replacements, échanges) pendant le budget indiqué, puis recentrage et tassement horizontal, avec un contrôle indépendant après chaque phase. Indisponible avec BIPAL / TRIPAL ou au-delà de 150 colis : le moteur rapide prend alors le relais.'
+    : 'Réimplémentation rapide de l\'application : heuristique multi-départ, fusion, tassement vertical, recentrage et tassement horizontal. Chaque phase de recherche peut utiliser le budget de calcul, mais s\'arrête dès que plus rien ne s\'améliore ; pas de regroupement par DAT.';
 }
 function remplirSelectMoteur() {
   const sel = $('#select-moteur');
@@ -283,17 +385,78 @@ function remplirSelectMoteur() {
     sel.appendChild(o);
   }
 }
+/** Plan de la soute dans la boîte de dialogue : reflète les valeurs en cours de saisie. */
+function majPlanParametres() {
+  const p = lireParametres();
+  const emps = emplacementsPlan(p, etat.config.versions_avion);
+  dessinerPlanSoute($('#plan-parametres'), emps, { surClic: basculerEmplacement });
+  const libres = emps.filter((e) => e.etat === 'libre');
+  const nS = libres.filter((e) => e.zone === 'soute').length, nR = libres.filter((e) => e.zone === 'rampe').length;
+  const indispo = emps.filter((e) => e.etat === 'indisponible').length, sieges = emps.filter((e) => e.etat === 'passagers').length;
+  $('#aide-plan').textContent = `${libres.length} emplacement(s) libre(s) : ${nS} en soute (jusqu'à ${nombre(Number(p.masse_max_soute) - (Number(p.tare_palette) || 0))} kg) et ${nR} sur la rampe (jusqu'à ${nombre(Number(p.masse_max_rampe) - (Number(p.tare_palette) || 0))} kg).`
+    + (indispo ? ` ${indispo} indisponible(s).` : '') + (sieges ? ` ${sieges} pris par les sièges des passagers.` : '');
+}
+function basculerEmplacement(e) {
+  if (e.etat === 'passagers') { notifier('Cet emplacement est pris par les sièges : réduisez le nombre de passagers pour le libérer.'); return; }
+  if (brouillonIndispo.has(e.numero)) brouillonIndispo.delete(e.numero); else brouillonIndispo.add(e.numero);
+  majPlanParametres();
+}
+function appliquerReglesProjet() {
+  const champ = (k) => $(`[data-param=${k}]`);
+  champ('reduction_couloir').value = 14;
+  champ('iata_au_bord').checked = true;
+  champ('facteur_masse').value = 1;
+  majAideLargeurUtile();
+}
 
 // ---------------------------------------------------------------- optimisation
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function duree(s) {
+  s = Math.max(0, Math.round(s));
+  return s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s` : `${s} s`;
+}
+function afficherAvancement(e) {
+  const barre = $('#chargement-barre');
+  const phase = $('#chargement-phase');
+  const temps = $('#chargement-temps');
+  phase.innerHTML = `<strong>${echapper(e.libelle)}</strong>`;
+  if (e.phase === 'vnd' && e.budget_phase) {
+    const part = Math.min(1, e.ecoule_phase / e.budget_phase);
+    barre.className = ''; barre.style.width = `${Math.round(part * 100)}%`;
+    temps.textContent = `VND : ${duree(e.ecoule_phase)} sur ${duree(e.budget_phase)} de budget (elle s'arrête avant si plus rien ne s'améliore) · temps total ${duree(e.ecoule)}`;
+  } else {
+    barre.className = 'indeterminee'; barre.style.width = '';
+    temps.textContent = `Temps écoulé : ${duree(e.ecoule)} · budget de la VND : ${duree(e.budget)}`;
+  }
+}
+/** Interroge le serveur jusqu'à la fin du calcul, en affichant la phase en cours. */
+async function attendreCalcul(id) {
+  let echecs = 0;
+  for (;;) {
+    await pause(500);
+    let e;
+    try { e = await api(`/api/optimiser_etat?id=${encodeURIComponent(id)}`); echecs = 0; } catch (erreur) {
+      if (++echecs >= 4) throw erreur;
+      continue;
+    }
+    if (e.etat === 'termine') return e.resultat;
+    if (e.etat === 'erreur') throw new Error(e.erreur);
+    afficherAvancement(e);
+  }
+}
 async function optimiser() {
   if (!etat.colis.length) { notifier('Ajoutez d\'abord des colis.', true); return; }
   $('#chargement').hidden = false;
   $('#btn-optimiser').disabled = true;
+  afficherAvancement({ libelle: 'Préparation des colis', phase: 'preparation', ecoule: 0, ecoule_phase: 0, budget: etat.parametres.temps_limite });
   try {
-    const res = await api('/api/optimiser', { colis: etat.colis, parametres: etat.parametres });
+    const dem = await api('/api/optimiser_demarrer', { colis: etat.colis, parametres: etat.parametres });
+    const res = await attendreCalcul(dem.id);
     res._indexColis = {};
     for (const pal of res.palettes) for (const p of pal.placements) res._indexColis[p.colis.numero] = pal.numero;
     etat.resultat = res;
+    etat.perime = false;
+    $('#bilan-perime').hidden = true;
     etat.selection = null;
     etat.etape = 'finale';
     etat.paletteCourante = res.palettes.length === 1 ? 1 : 'ensemble';
@@ -302,12 +465,13 @@ async function optimiser() {
     afficherOnglets();
     afficherVue();
     afficherBilan();
+    afficherQualite();
     afficherMessages();
     afficherListe();
     afficherInfoColis(null);
     const nbErr = res.verification.filter((m) => m.niveau === 'erreur').length;
     notifier(`${res.palettes.length} palette(s), ${res.bilan.positions_utilisees} emplacement(s), ${res.bilan.colis_places} colis placés`
-      + (res.non_places.length ? `, ${res.non_places.length} non placé(s)` : '') + ` — ${res.iterations} construction(s) en ${res.duree} s`
+      + (res.non_places.length ? `, ${res.non_places.length} non placé(s)` : '') + ` — calcul en ${duree(res.duree)}`
       + (nbErr ? ` — ${nbErr} erreur(s) à corriger` : ''), nbErr > 0);
   } catch (e) {
     notifier('Échec du calcul : ' + e.message, true);
@@ -345,7 +509,7 @@ function changerEtape(cle) {
   const d = donnees();
   if (etat.paletteCourante !== 'ensemble' && !d.palettes.some((p) => p.numero === etat.paletteCourante)) etat.paletteCourante = 'ensemble';
   etat.selection = null;
-  afficherEtapes(); afficherOnglets(); afficherVue(); afficherBilan(); afficherMessages(); afficherInfoColis(null);
+  afficherEtapes(); afficherOnglets(); afficherVue(); afficherBilan(); afficherQualite(); afficherMessages(); afficherInfoColis(null);
 }
 function afficherJournal() {
   const res = etat.resultat;
@@ -353,6 +517,7 @@ function afficherJournal() {
   const ol = $('#liste-journal');
   ol.innerHTML = '';
   carte.hidden = !res || !(res.journal && res.journal.length);
+  $('#separateur-journal').hidden = carte.hidden;
   if (carte.hidden) return;
   const cibles = { 1: 'heuristique', 2: 'apres_vnd', 4: 'finale' };
   for (const j of res.journal) {
@@ -384,7 +549,7 @@ function afficherOnglets() {
     b.className = 'onglet' + (String(etat.paletteCourante) === String(it.id) ? ' actif' : '');
     b.dataset.palette = it.id;
     b.innerHTML = it.txt;
-    b.addEventListener('click', () => { etat.paletteCourante = it.id === 'ensemble' ? 'ensemble' : parseInt(it.id, 10); afficherOnglets(); afficherVue(); });
+    b.addEventListener('click', () => { etat.paletteCourante = it.id === 'ensemble' ? 'ensemble' : parseInt(it.id, 10); afficherOnglets(); afficherVue(); surlignerQualite(); });
     zone.appendChild(b);
   }
 }
@@ -445,10 +610,66 @@ function afficherBilan() {
     ligne('Charge totale', `${nombre(b.masse_totale_brute)} / ${nombre(b.capacite_avion)} kg`, masseOk ? 'bon' : 'mauvais'),
     ligne('Hauteur globale', `${nombre(b.hauteur_globale)} cm`),
     ligne('Somme des hauteurs', `${nombre(b.somme_hauteurs)} cm`),
-    ligne('Calcul', `${res.iterations} constructions · ${res.duree} s · ${res.moteur === 'notebook' ? 'code du notebook CDP_5' : 'moteur rapide'}`),
+    ligne('Calcul', `${res.moteur === 'notebook' ? `${res.iterations} essais d'heuristique` : `${res.iterations} constructions`} · ${duree(res.duree)} · ${res.moteur === 'notebook' ? 'code du notebook CDP_5' : 'moteur rapide'}`),
   ].join('');
   $('#boutons-export').hidden = false;
   $('#info-export').hidden = true;
+  const plan = $('#plan-bilan');
+  plan.hidden = false;
+  dessinerPlanSoute(plan, b.plan_soute, {
+    titre: 'Occupation des emplacements de l\'avion', compact: true,
+    surClic: (e) => { if (e.palette) { etat.paletteCourante = e.palette; afficherOnglets(); afficherVue(); surlignerQualite(); } },
+  });
+}
+const formatSigne = (v, dec = 3) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toLocaleString('fr-FR', { minimumFractionDigits: dec, maximumFractionDigits: dec })}`;
+const formatM = (v, dec = 3) => v.toLocaleString('fr-FR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+const formatPct = (v) => (100 * v).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+/** Tableau de qualité des palettes de l'étape affichée : les indicateurs de la visualisation du notebook. */
+function afficherQualite() {
+  const panneau = $('#panneau-qualite');
+  const sep = $('#separateur-qualite');
+  const res = donnees();
+  const visible = !!(res && res.palettes.length && res.indicateurs);
+  panneau.hidden = sep.hidden = !visible;
+  if (!visible) return;
+  const ind = res.indicateurs;
+  const etape = (etat.resultat.etapes || []).find((e) => e.cle === etat.etape);
+  $('#qualite-etape').textContent = etape ? `· ${etape.titre}` : '';
+  $('#qualite-resume').textContent = `Palettes : ${ind.nombre_palettes} | Hauteur maximale : ${formatM(ind.hauteur_maximale)} m | Somme des hauteurs : ${formatM(ind.somme_hauteurs)} m`;
+  const corps = $('#table-qualite tbody');
+  corps.innerHTML = '';
+  for (const m of ind.palettes) {
+    const pal = res.palettes.find((p) => p.numero === m.palette);
+    const tr = document.createElement('tr');
+    tr.dataset.palette = m.palette;
+    tr.title = 'Afficher cette palette';
+    const barre = (v) => `<span class="mini-barre"><i style="width:${Math.min(100, 100 * v)}%"></i></span>`;
+    tr.innerHTML = `<td><strong>${m.palette}</strong> <span class="aide">${pal ? (pal.zone === 'rampe' ? 'rampe' : 'soute') : ''}</span></td>
+      <td>${pal && pal.emplacements.length ? pal.emplacements.join(', ') : '—'}</td>
+      <td>${m.nombre_colis}</td>
+      <td>${nombre(m.masse, 1)} <span class="aide">/ ${nombre(m.masse_max)}</span>${barre(m.taux_masse)}</td>
+      <td>${formatM(m.hauteur)}</td>
+      <td>${formatPct(m.compacite)}${barre(m.compacite)}</td>
+      <td>${formatPct(m.remplissage_volumique)}${barre(m.remplissage_volumique)}</td>
+      <td>${formatPct(m.taux_surface_sol)}${barre(m.taux_surface_sol)}</td>
+      <td>${formatSigne(m.centre_masse_x)}</td><td>${formatSigne(m.centre_masse_y)}</td>
+      <td>${formatM(m.decalage_horizontal)}</td>`;
+    tr.addEventListener('click', () => { etat.paletteCourante = m.palette; afficherOnglets(); afficherVue(); surlignerQualite(); });
+    corps.appendChild(tr);
+  }
+  // Comparaison des états du calcul (heuristique, après la VND, solution finale)
+  const etapes = (etat.resultat.etapes || []).filter((e) => e.indicateurs);
+  const zone = $('#qualite-etapes');
+  if (etapes.length < 2) { zone.innerHTML = ''; } else {
+    zone.innerHTML = `<table><thead><tr><th>État du calcul</th><th>Palettes</th><th>Hauteur maximale (m)</th><th>Somme des hauteurs (m)</th><th>Remplissage volumique moyen (%)</th></tr></thead><tbody>`
+      + etapes.map((e) => `<tr class="${e.cle === etat.etape ? 'actif' : ''}" data-etape="${e.cle}" style="cursor:pointer" title="Afficher cet état"><td>${echapper(e.titre)}</td><td>${e.indicateurs.nombre_palettes}</td><td>${formatM(e.indicateurs.hauteur_maximale)}</td><td>${formatM(e.indicateurs.somme_hauteurs)}</td><td>${formatPct(e.indicateurs.remplissage_moyen)}</td></tr>`).join('')
+      + '</tbody></table>';
+    zone.querySelectorAll('tr[data-etape]').forEach((tr) => tr.addEventListener('click', () => changerEtape(tr.dataset.etape)));
+  }
+  surlignerQualite();
+}
+function surlignerQualite() {
+  $$('#table-qualite tbody tr').forEach((tr) => tr.classList.toggle('selectionnee', String(tr.dataset.palette) === String(etat.paletteCourante)));
 }
 function afficherInfoPalette(numero) {
   const zone = $('#contenu-palette');
@@ -463,16 +684,19 @@ function afficherInfoPalette(numero) {
   if (!p) return;
   const tauxMasse = p.masse / p.masse_max;
   const chips = p.classes.length ? p.classes.map(chipClasse).join(' ') : '<span class="aide">aucune matière dangereuse</span>';
-  const [cx, cy] = p.centre_de_masse;
+  const m = p.indicateurs;
   zone.innerHTML = `<div class="fiche-info"><dl>
-    <dt>Type</dt><dd>${echapper(p.libelle_type)} · ${p.zone === 'rampe' ? '<span class="chip">rampe</span>' : 'soute'}</dd>
-    <dt>Dimensions utiles</dt><dd>${nombre(p.largeur)} × ${nombre(p.longueur)} × ${nombre(p.hauteur_max)} cm <span class="aide">(plateau ${nombre(p.largeur_physique)} × ${nombre(p.longueur_physique)} cm, couloir de ${nombre(p.axe_cotes === 'x' ? p.marge_x : p.marge_y, 1)} cm de chaque côté, sur l'axe ${p.axe_cotes})</span></dd>
-    <dt>Masse nette</dt><dd>${nombre(p.masse, 1)} / ${nombre(p.masse_max)} kg<div class="barre-jauge"><span class="${tauxMasse > 1 ? 'mauvais' : ''}" style="width:${Math.min(100, tauxMasse * 100)}%"></span></div></dd>
-    <dt>Masse brute estimée</dt><dd>${nombre(p.masse_brute, 1)} kg <span class="aide">(avec ${p.positions} palette(s) vide(s))</span></dd>
-    <dt>Hauteur</dt><dd>${nombre(p.hauteur, 1)} cm</dd>
+    <dt>Type</dt><dd>${echapper(p.libelle_type)} · ${p.zone === 'rampe' ? '<span class="chip">rampe</span>' : 'soute'}${p.emplacements.length ? ` · emplacement ${p.emplacements.join(', ')}` : ' · <span class="danger">sans emplacement libre</span>'}</dd>
+    <dt>Dimensions utiles</dt><dd>${nombre(p.largeur)} × ${nombre(p.longueur)} × ${nombre(p.hauteur_max)} cm${p.marge_x || p.marge_y ? ` <span class="aide">(plateau ${nombre(p.largeur_physique)} × ${nombre(p.longueur_physique)} cm, couloir de ${nombre(p.axe_cotes === 'x' ? p.marge_x : p.marge_y, 1)} cm de chaque côté, sur l'axe ${p.axe_cotes})</span>` : ''}</dd>
+    <dt>Charge</dt><dd>${nombre(p.masse, 1)} / ${nombre(p.masse_max)} kg<div class="barre-jauge"><span class="${tauxMasse > 1 ? 'mauvais' : ''}" style="width:${Math.min(100, tauxMasse * 100)}%"></span></div></dd>
+    ${p.masse_brute !== p.masse ? `<dt>Masse brute estimée</dt><dd>${nombre(p.masse_brute, 1)} kg <span class="aide">(avec ${p.positions} palette(s) vide(s))</span></dd>` : ''}
     <dt>Colis</dt><dd>${p.nombre_colis}</dd>
-    <dt>Remplissage</dt><dd>${Math.round(p.taux_volume * 100)} % du volume utilisé · ${Math.round(p.taux_sol * 100)} % du sol couvert</dd>
-    <dt>Centre de masse</dt><dd>x = ${nombre(cx)} cm (centre ${nombre(p.largeur / 2)}), y = ${nombre(cy)} cm (centre ${nombre(p.longueur / 2)})</dd>
+    <dt>Hauteur</dt><dd>${formatM(m.hauteur)} m</dd>
+    <dt>Compacité</dt><dd>${formatPct(m.compacite)} % <span class="aide">(volume des colis / enveloppe du tas)</span></dd>
+    <dt>Remplissage volumique</dt><dd>${formatPct(m.remplissage_volumique)} % <span class="aide">(volume des colis / volume de la palette)</span></dd>
+    <dt>Surface au sol</dt><dd>${formatPct(m.taux_surface_sol)} % du plateau · ${formatM(m.surface_sol, 2)} m²</dd>
+    <dt>Centre de masse</dt><dd>x = ${formatSigne(m.centre_masse_x)} m, y = ${formatSigne(m.centre_masse_y)} m <span class="aide">(depuis le centre du plateau)</span></dd>
+    <dt>Décalage horizontal</dt><dd>${formatM(m.decalage_horizontal)} m <span class="aide">(0 = centré)</span></dd>
     <dt>Classes présentes</dt><dd class="chips">${chips}</dd>
   </dl></div>`;
 }
@@ -501,7 +725,8 @@ function afficherInfoColis(placement, palette) {
   const L = palette.largeur;
   const acces = placement.acces_iata || [];
   const bord = placement.bord_iata || [];
-  const nomCote = { gauche: 'couloir gauche', droite: 'couloir droit' };
+  const avecCouloir = (palette.marge_x || 0) > 0 || (palette.marge_y || 0) > 0;
+  const nomCote = avecCouloir ? { gauche: 'couloir gauche', droite: 'couloir droit' } : { gauche: 'côté gauche', droite: 'côté droit' };
   const iataTxt = (c.classe && etat.classes[c.classe]?.iata)
     ? ((acces.length ? ` · <span style="color:var(--ok)">étiquette visible depuis le ${acces.map((a) => nomCote[a] || a).join(' et le ')}</span>` : ' · <span style="color:var(--danger)">étiquette masquée des deux côtés</span>')
       + (etat.resultat.parametres.iata_au_bord ? (bord.length ? ` · <span style="color:var(--ok)">posé contre le bord (${bord.map((a) => nomCote[a] || a).join(' et ')})</span>` : ' · <span style="color:var(--danger)">pas posé sur le bord</span>') : ''))
@@ -512,7 +737,7 @@ function afficherInfoColis(placement, palette) {
     <dt>Posé (X × Y × Z)</dt><dd>${nombre(placement.dx, 1)} × ${nombre(placement.dy, 1)} × ${nombre(placement.dz, 1)} cm · ${orientationTxt}</dd>
     <dt>Masse</dt><dd>${nombre(c.masse, 1)} kg</dd>
     <dt>Classe</dt><dd>${chipClasse(c.classe)} ${echapper(libelleClasse(c.classe))}${iataTxt}</dd>
-    <dt>Emballage</dt><dd>${echapper(libelleEmballage(c.emballage))}${etat.resultat.parametres.emballages_ecrasables.split(',').includes(c.emballage) && c.emballage ? ' · <strong>ne pas écraser</strong>' : ''}${c.fragile ? ' · <strong>fragile</strong>' : ''}</dd>
+    <dt>Emballage</dt><dd>${echapper(libelleEmballage(c.emballage))}${c.fragile ? ' · <strong>fragile</strong>' : ''}</dd>
     ${c.reference ? `<dt>N° de série</dt><dd>${echapper(c.reference)}</dd>` : ''}
     ${c.dat ? `<dt>DAT</dt><dd>${echapper(c.dat)}</dd>` : ''}
     <dt>Position</dt><dd>x = ${nombre(placement.x, 1)}, y = ${nombre(placement.y, 1)}, z = ${nombre(placement.z, 1)} cm (coin) · sommet à ${nombre(placement.z + placement.dz, 1)} cm</dd>
@@ -593,8 +818,14 @@ async function importerTexte(fichier, texte) {
   const existants = new Set(remplacer ? [] : etat.colis.map((c) => c.numero));
   const nouveaux = rep.colis.map((c) => ({ ...c, quantite: 1 })).filter((c) => !existants.has(c.numero));
   etat.colis = remplacer ? nouveaux : etat.colis.concat(nouveaux);
-  if (rep.parametres) etat.parametres = { ...etat.parametres, ...rep.parametres };
-  sauvegarderLocal(); afficherListe();
+  if (rep.parametres) {
+    // projet enregistré par une version précédente : l'ancienne dérogation au couloir devient « pas de couloir »
+    const anciens = { ...rep.parametres };
+    if (anciens.derogation_couloir) anciens.reduction_couloir = 0;
+    for (const k of PARAMETRES_OBSOLETES) delete anciens[k];
+    etat.parametres = { ...etat.parametres, ...anciens };
+  }
+  sauvegarderLocal(); marquerPerime(); afficherListe();
   notifier(`${nouveaux.length} colis importés depuis ${fichier.name}` + (rep.avertissements.length ? ` (${rep.avertissements.length} ligne(s) ignorée(s))` : ''));
 }
 function versBase64(tampon) {
@@ -618,10 +849,10 @@ async function importerExcel(fichier, octets) {
         ${pastille(r.armes, 'armes (ARME)')}
         ${pastille(r.pieces_securite, 'pièces de sécurité d\'armes (SECU)')}
         ${pastille(r.dangereux, 'colis IATA (posés sur le bord côté couloir)')}
-        ${pastille(r.carton + r.fibre, `colis en carton ou en fibre, à ne pas écraser (${r.carton} carton, ${r.fibre} fibre)`)}
+        ${r.dat ? pastille(r.dat, 'DAT différents (les colis d\'un même DAT voyagent ensemble)') : ''}
       </ul>
       ${rep.avertissements.length ? `<p class="aide"><strong>À vérifier</strong></p><ul class="avertissements-import">${rep.avertissements.map((a) => `<li>${echapper(a)}</li>`).join('')}</ul>` : ''}
-      <p class="aide">La température est ignorée. Le caractère fragile n'est pas déduit du fichier : cochez-le à la main sur les colis concernés.</p>`;
+      <p class="aide">La température est ignorée. L'emballage est conservé à titre d'information : il ne change pas le placement. Le caractère fragile n'est pas déduit du fichier : cochez-le dans la liste sur les colis concernés. Vous pourrez corriger chaque colis dans la liste avant de lancer le calcul.</p>`;
     $('#btn-import-ajouter').hidden = etat.colis.length === 0;
     $('#dlg-import').showModal();
   } catch (e) { notifier('Import impossible : ' + e.message, true); }
@@ -634,8 +865,8 @@ function validerImportExcel(remplacer) {
   const nouveaux = att.colis.filter((c) => !existants.has(c.numero));
   etat.colis = remplacer ? nouveaux : etat.colis.concat(nouveaux);
   importEnAttente = null;
-  sauvegarderLocal(); afficherListe(); reinitialiserFormulaire();
-  notifier(`${nouveaux.length} colis importés depuis ${att.nom}` + (att.colis.length > nouveaux.length ? ` (${att.colis.length - nouveaux.length} déjà présents, ignorés)` : '') + '. Cliquez sur « Confectionner les palettes ».');
+  sauvegarderLocal(); marquerPerime(); afficherListe(); reinitialiserFormulaire();
+  notifier(`${nouveaux.length} colis importés depuis ${att.nom}` + (att.colis.length > nouveaux.length ? ` (${att.colis.length - nouveaux.length} déjà présents, ignorés)` : '') + '. Corrigez-les si besoin dans la liste, puis cliquez sur « Confectionner les palettes ».');
 }
 async function exporter(format, extra = {}) {
   try {
@@ -702,8 +933,12 @@ function ouvrirFiche() {
         <div><div class="cle">Masse brute estimée (kg)</div><div class="valeur">${nombre(p.masse_brute, 1)}</div></div>
         <div><div class="cle">Hauteur (cm)</div><div class="valeur">${nombre(p.hauteur, 1)}</div></div>
         <div><div class="cle">Colis</div><div class="valeur">${p.nombre_colis}</div></div>
+        <div><div class="cle">Compacité (%)</div><div class="valeur">${formatPct(p.indicateurs.compacite)}</div></div>
+        <div><div class="cle">Remplissage volumique (%)</div><div class="valeur">${formatPct(p.indicateurs.remplissage_volumique)}</div></div>
+        <div><div class="cle">Décalage du centre de masse (m)</div><div class="valeur">${formatM(p.indicateurs.decalage_horizontal)}</div></div>
+        <div><div class="cle">Emplacement(s)</div><div class="valeur">${p.emplacements.length ? p.emplacements.join(', ') : '—'}</div></div>
       </div>
-      <p><strong>Matières dangereuses :</strong> ${iata.length ? iata.map((c) => `${echapper(c)} (${echapper(libelleClasse(c))})`).join(', ') + ' — posées contre un bord côté couloir, étiquette visible' : 'aucune'}${p.classes.some((c) => ['ARME', 'SECU'].includes(c)) ? ' · <strong>armement</strong>' : ''}</p>
+      <p><strong>Matières dangereuses :</strong> ${iata.length ? iata.map((c) => `${echapper(c)} (${echapper(libelleClasse(c))})`).join(', ') + ' — étiquette visible depuis un côté' : 'aucune'}${p.classes.some((c) => ['ARME', 'SECU'].includes(c)) ? ' · <strong>armement</strong>' : ''}</p>
       ${plan2D(p)}
       <table><thead><tr><th>N° colis</th><th>Dimensions L × l × h (cm)</th><th>kg</th><th>Classe</th><th>Emballage</th><th>Posé X × Y × Z (cm)</th><th>Position x ; y ; z (cm)</th><th>Commentaire</th></tr></thead><tbody>${lignes}</tbody></table>
       ${avert}
@@ -730,7 +965,7 @@ async function initialiser() {
   const selEmb = $('#f-emballage');
   for (const e of etat.config.emballages) {
     const o = document.createElement('option');
-    o.value = e.code; o.textContent = e.libelle + (e.ecrasable ? ' — ne pas écraser' : '');
+    o.value = e.code; o.textContent = e.libelle;
     selEmb.appendChild(o);
   }
   remplirSelectMoteur();
@@ -752,6 +987,8 @@ async function initialiser() {
     },
   });
 
+  initialiserSeparateurs();
+
   // Formulaire
   reinitialiserFormulaire();
   afficherListe();
@@ -759,11 +996,14 @@ async function initialiser() {
   $('#btn-annuler-edition').addEventListener('click', reinitialiserFormulaire);
   $('#f-classe').addEventListener('change', majAideClasse);
   $('#table-colis').addEventListener('click', surClicListe);
+  $('#table-colis').addEventListener('change', surModifListe);
+  $('#table-colis').addEventListener('keydown', surToucheListe);
   $('#btn-vider').addEventListener('click', () => {
     if (!etat.colis.length || confirm('Supprimer tous les colis de la liste ?')) {
       etat.colis = []; etat.resultat = null; etat.selection = null; sauvegarderLocal(); afficherListe(); afficherOnglets();
       $('#message-vue').hidden = false; vue.vider(); vue.demanderRendu(); afficherMessages(); $('#grille-bilan').innerHTML = '<p class="vide">Lancez un calcul pour obtenir le bilan.</p>'; $('#boutons-export').hidden = true;
       afficherInfoColis(null); afficherInfoPalette(null); $('#legende').innerHTML = ''; afficherEtapes(); afficherJournal(); reinitialiserFormulaire();
+      afficherQualite(); $('#plan-bilan').hidden = true; $('#bilan-perime').hidden = true; etat.perime = false;
     }
   });
   const selExemple = $('#sel-exemple');
@@ -778,9 +1018,9 @@ async function initialiser() {
     if (!nom) return;
     if (etat.colis.length && !confirm('Remplacer la liste actuelle par cet exemple ?')) return;
     const rep = await api('/api/exemple?nom=' + encodeURIComponent(nom));
-    const garde = { moteur: etat.parametres.moteur, duree_recherche: etat.parametres.duree_recherche, temps_limite: etat.parametres.temps_limite };
+    const garde = { moteur: etat.parametres.moteur, temps_limite: etat.parametres.temps_limite };
     etat.parametres = { ...etat.config.parametres, ...garde, ...(rep.parametres || {}) };
-    etat.colis = rep.colis; sauvegarderLocal(); afficherListe(); reinitialiserFormulaire();
+    etat.colis = rep.colis; sauvegarderLocal(); marquerPerime(); afficherListe(); reinitialiserFormulaire();
     notifier(`${rep.titre} : ${rep.colis.length} ligne(s) chargée(s)` + (rep.parametres ? ' avec les paramètres du notebook' : '')
       + ((rep.avertissements || []).length ? ` — ${rep.avertissements[0]}` : '') + '. Cliquez sur « Confectionner les palettes ».');
   });
@@ -792,6 +1032,11 @@ async function initialiser() {
   $('#btn-enregistrer').addEventListener('click', () => exporter('projet'));
   $('#btn-exporter-colis').addEventListener('click', () => exporter('colis_csv'));
   $('#btn-optimiser').addEventListener('click', optimiser);
+  $('#btn-reduire-qualite').addEventListener('click', () => {
+    const p = $('#panneau-qualite');
+    const reduit = p.classList.toggle('reduit');
+    $('#btn-reduire-qualite').textContent = reduit ? 'Agrandir ▴' : 'Réduire ▾';
+  });
   $('#btn-plan-csv').addEventListener('click', () => exporter('plan_csv', { contenu: planCsv() }));
   $('#btn-plan-json').addEventListener('click', () => exporter('plan_json', { resultat: etat.resultat }));
   $('#btn-fiche').addEventListener('click', ouvrirFiche);
@@ -802,13 +1047,14 @@ async function initialiser() {
   $('#btn-parametres').addEventListener('click', ouvrirParametres);
   $('#btn-params-annuler').addEventListener('click', () => $('#dlg-parametres').close());
   $('#btn-params-defaut').addEventListener('click', () => { etat.parametres = { ...etat.config.parametres }; ouvrirParametres(); });
-  $('[data-param=passagers]').addEventListener('input', majAidePassagers);
-  for (const k of ['largeur_palette', 'longueur_palette', 'reduction_couloir', 'derogation_couloir', 'axe_cotes']) $(`[data-param=${k}]`).addEventListener('input', majAideLargeurUtile);
+  $('#btn-regles-projet').addEventListener('click', appliquerReglesProjet);
+  $('#form-parametres').addEventListener('input', () => { majAidePassagers(); majAideLargeurUtile(); majPlanParametres(); });
   $('#select-moteur').addEventListener('change', majAideMoteur);
   $('#form-parametres').addEventListener('submit', (e) => {
     e.preventDefault();
     etat.parametres = lireParametres();
     sauvegarderLocal();
+    marquerPerime();
     majAideClasse();
     $('#dlg-parametres').close();
     notifier('Paramètres enregistrés. Relancez le calcul pour les appliquer.');

@@ -107,7 +107,7 @@ def test_cotes_bord(axe):
 
 @pytest.mark.parametrize("axe", ["x", "y"])
 def test_iata_en_regle_exige_le_bord_et_la_visibilite(axe):
-    params = Parametres(axe_cotes=axe)
+    params = Parametres(axe_cotes=axe, iata_au_bord=True)
     dangereux = dict(numero="D", classe="3", longueur=50, largeur=50)
     au_bord = pl(axe, 0, 0, 0, 50, 50, 50, **dangereux)
     loin = pl(axe, 60, 0, 0, 50, 50, 50, **dangereux)
@@ -123,28 +123,62 @@ def test_iata_en_regle_exige_le_bord_et_la_visibilite(axe):
     assert not iata_en_regle(au_bord, [au_bord, gauche, droite], 246, params, axe)
 
 
-def test_plafond_charge_fragile_carton_et_masse():
-    params = Parametres()
-    assert plafond_charge(colis(masse=100), params) == 100                                   # facteur masse 1
-    assert plafond_charge(colis(masse=100, fragile=True), params) == 0
-    assert plafond_charge(colis(masse=100, emballage="carton"), params) == 0               # carton : rien dessus
-    assert plafond_charge(colis(masse=100, emballage="fibre"), params) == 0
-    assert plafond_charge(colis(masse=100, emballage="bois"), params) == 100
-    assert plafond_charge(colis(masse=100, emballage="carton"), Parametres(charge_max_carton=30)) == 30
-    assert plafond_charge(colis(masse=20, emballage="carton"), Parametres(charge_max_carton=30)) == 20
-    # le réglage « matières à ne pas écraser » est modifiable
-    assert plafond_charge(colis(masse=100, emballage="fibre"), Parametres(emballages_ecrasables="carton")) == 100
-    assert plafond_charge(colis(masse=100, emballage="bois"), Parametres(emballages_ecrasables="bois,carton")) == 0
+def test_plafond_charge_fragile_et_masse():
+    """Rien sur un colis fragile ; « lourd sur léger » seulement si ``facteur_masse`` > 0 (désactivé par défaut)."""
+    assert plafond_charge(colis(masse=100), Parametres()) == float("inf")                  # le notebook n'a pas cette règle
+    assert plafond_charge(colis(masse=100), Parametres(facteur_masse=1)) == 100
+    assert plafond_charge(colis(masse=100), Parametres(facteur_masse=1.5)) == 150
+    assert plafond_charge(colis(masse=100, fragile=True), Parametres(facteur_masse=1)) == 0
+    assert plafond_charge(colis(masse=100, fragile=True), Parametres()) == 0
+
+
+@pytest.mark.parametrize("matiere", ["", "carton", "fibre", "bois", "metal"])
+def test_la_matiere_de_l_emballage_n_intervient_pas(matiere):
+    """La matière n'est qu'une information : même charge admissible pour toutes, comme dans le notebook."""
+    assert plafond_charge(colis(masse=100, emballage=matiere), Parametres(facteur_masse=1)) == 100
+    assert plafond_charge(colis(masse=100, emballage=matiere), Parametres()) == float("inf")
+
+
+def test_dimensions_utiles_par_defaut_comme_le_notebook():
+    """Cellule 2 du notebook : 2,74 x 2,24 x 2,54 m, aucun couloir, aucune tare."""
+    p = Parametres()
+    t = {t.code: t for t in p.types_palettes()}
+    assert (t["10K"].largeur, t["10K"].longueur, t["10K"].hauteur_max, t["10K"].masse_max) == (274, 224, 254, 4536)
+    assert (t["BIPAL"].largeur, t["BIPAL"].longueur) == (274, 448) and t["TRIPAL"].longueur == 672
+    r = p.type_rampe()
+    assert (r.largeur, r.longueur, r.hauteur_max, r.masse_max) == (274, 224, 254, 3000)
+    assert (p.reduction_couloir, p.tare_palette, p.iata_au_bord, p.facteur_masse) == (0, 0, False, 0)
 
 
 def test_dimensions_utiles_selon_l_axe_des_cotes():
-    """Le couloir de 14 cm de chaque côté réduit l'axe des côtés : y (notebook) par défaut, ou x."""
-    t = {t.code: t for t in Parametres().types_palettes()}
+    """Un couloir de 14 cm de chaque côté réduit l'axe des côtés : y (notebook) par défaut, ou x."""
+    t = {t.code: t for t in Parametres(reduction_couloir=14).types_palettes()}
     assert (t["10K"].largeur, t["10K"].longueur, t["10K"].axe_cotes) == (274, 196, "y")
     assert (t["BIPAL"].largeur, t["BIPAL"].longueur) == (274, 420)         # le couloir n'est laissé qu'aux deux extrémités
     assert t["TRIPAL"].longueur == 644 and t["10K"].etendue_cotes == 196
-    t = {t.code: t for t in Parametres(axe_cotes="x").types_palettes()}
+    t = {t.code: t for t in Parametres(axe_cotes="x", reduction_couloir=14).types_palettes()}
     assert (t["10K"].largeur, t["10K"].longueur, t["10K"].etendue_cotes) == (246, 224, 246)
     assert t["BIPAL"].longueur == 448
-    t = Parametres(derogation_couloir=True).types_palettes()[0]
-    assert (t.largeur, t.longueur) == (274, 224)                           # dérogation : pas de couloir
+    r = Parametres(reduction_couloir=14).type_rampe()
+    assert (r.largeur, r.longueur) == (274, 196)                           # la rampe aussi a son couloir
+    # projets enregistrés avec l'ancienne dérogation : pas de couloir
+    assert Parametres.depuis_dict({"reduction_couloir": 14, "derogation_couloir": True}).reduction_couloir == 0
+
+
+def test_emplacements_soute_et_rampe():
+    """7 emplacements en soute (1 à 7) et 2 sur la rampe (8 et 9), déclarables indisponibles."""
+    p = Parametres()
+    assert p.numeros_emplacements("soute") == [1, 2, 3, 4, 5, 6, 7] and p.numeros_emplacements("rampe") == [8, 9]
+    assert p.emplacements_libres() == list(range(1, 10)) and (p.places_soute, p.places_rampe) == (7, 2)
+    p = Parametres.depuis_dict({"emplacements_indisponibles": [2, "9"]})
+    assert p.emplacements_libres() == [1, 3, 4, 5, 6, 7, 8] and (p.places_soute, p.places_rampe) == (6, 1)
+    assert Parametres.depuis_dict({"emplacements_indisponibles": "1, 8"}).emplacements_libres() == [2, 3, 4, 5, 6, 7, 9]
+    # caractéristiques différentes : 4 536 kg en soute, 3 000 kg sur la rampe
+    assert (Parametres().types_palettes()[0].masse_max, Parametres().type_rampe().masse_max) == (4536, 3000)
+    assert Parametres(tare_palette=130).type_rampe().masse_max == 2870
+    # les sièges des passagers prennent les emplacements de l'avant (version à 64 passagers : 7 palettes au plus)
+    p = Parametres(passagers=64)
+    assert p.emplacements_passagers() == [1, 2] and p.emplacements_libres() == [3, 4, 5, 6, 7, 8, 9]
+    assert Parametres(passagers=64, emplacements_indisponibles=[1]).emplacements_passagers() == [2]
+    assert Parametres(passagers=200).emplacements_libres() == []
+

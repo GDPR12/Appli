@@ -79,6 +79,11 @@ class Gestionnaire(BaseHTTPRequestHandler):
         chemin = unquote(url.path)
         if chemin == "/api/config":
             return self._json(api.configuration())
+        if chemin == "/api/optimiser_etat":
+            try:
+                return self._json(api.etat_optimisation(parse_qs(url.query).get("id", [""])[0]))
+            except ValueError as e:
+                return self._json({"erreur": str(e)}, 404)
         if chemin == "/api/exemple":
             nom = parse_qs(url.query).get("nom", ["iata"])[0]
             return self._json(api.exemple(nom))
@@ -102,6 +107,8 @@ class Gestionnaire(BaseHTTPRequestHandler):
             if chemin == "/api/optimiser":
                 resultat = api.lancer_optimisation(corps.get("colis", []), corps.get("parametres"))
                 return self._json(resultat)
+            if chemin == "/api/optimiser_demarrer":
+                return self._json(api.demarrer_optimisation(corps.get("colis", []), corps.get("parametres")))
             if chemin == "/api/importer":
                 return self._json(api.importer_texte(corps.get("texte", "")))
             if chemin == "/api/importer_cargo":

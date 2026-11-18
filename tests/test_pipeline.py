@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from conftest import REGLES_PROJET
 from palettiseur import api
 from palettiseur import optimisation as opt
 from palettiseur.iata import regles
@@ -15,7 +16,10 @@ R = regles()
 
 
 def params(**kw):
-    kw.setdefault("derogation_couloir", True)      # largeur 274 cm, plus simple à raisonner
+    """Règles du projet (lourd sur léger, IATA au bord) sans couloir : plateau de 274 x 224 cm, plus simple à raisonner."""
+    for cle, valeur in REGLES_PROJET.items():
+        if cle != "reduction_couloir":
+            kw.setdefault(cle, valeur)
     return Parametres(**kw)
 
 
@@ -69,7 +73,7 @@ def test_construction_ne_cree_jamais_de_lourd_sur_leger_par_porte_a_faux():
     lot = [Colis(f"C{i}", rng.randint(25, 100), rng.randint(25, 80), rng.randint(15, 70), rng.randint(3, 120),
                  emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "", "", "3", "5.1", "8", "ARME", "SECU"]),
                  fragile=rng.random() < 0.04) for i in range(300)]
-    res = opt.optimiser(lot, Parametres(moteur="heuristique", duree_recherche=1.0, graine=2, positions_soute=20))
+    res = opt.optimiser(lot, Parametres(moteur="heuristique", temps_limite=1.0, graine=2, positions_soute=20))
     # 300 colis dépassent les 9 emplacements de l'avion : on ne juge ici que les règles de palettisation
     assert [m for m in verifier(res) if m.niveau == "erreur" and m.code not in ("positions", "capacite")] == []
 
@@ -232,7 +236,7 @@ def test_tassement_vertical_ne_releve_jamais_un_sommet():
     rng = random.Random(7)
     lot = [Colis(f"C{i}", rng.randint(30, 100), rng.randint(30, 80), rng.randint(20, 60), rng.randint(5, 250),
                  emballage=rng.choice(["", "bois", "carton"]), classe=rng.choice(["", "", "", "3", "9", "2.2"])) for i in range(40)]
-    res = opt.optimiser(lot, Parametres(moteur="heuristique", duree_recherche=0.8, derogation_couloir=True))
+    res = opt.optimiser(lot, Parametres(moteur="heuristique", temps_limite=0.8))
     types = res.parametres.types_palettes()
     chs = []
     for pal in res.palettes:                                  # reconstitue des chargements modifiables
@@ -262,7 +266,7 @@ def test_normaliser_zones_repasse_en_soute():
 def test_resultat_contient_etapes_et_journal():
     """Moteur rapide : mêmes étapes et mêmes quatre phases que le pipeline de CDP_5 (heuristique, VND, recentrage,
     tassement horizontal)."""
-    res = opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(10)], params(moteur="heuristique", duree_recherche=1.0))
+    res = opt.optimiser([colis(i, 30, l=60, w=40, h=40) for i in range(10)], params(moteur="heuristique", temps_limite=1.0))
     assert res.moteur == "heuristique"
     assert [e.cle for e in res.etapes] == ["heuristique", "apres_vnd", "finale"]
     assert [j["phase"] for j in res.journal] == [1, 2, 3, 4]
@@ -274,7 +278,7 @@ def test_resultat_contient_etapes_et_journal():
 
 def test_resultat_json_avec_etapes():
     ex = api.exemple("iata")
-    d = api.lancer_optimisation(ex["colis"], {"moteur": "heuristique", "duree_recherche": 1.0})
+    d = api.lancer_optimisation(ex["colis"], {"moteur": "heuristique", "temps_limite": 1.0})
     json.dumps(d)
     assert [e["cle"] for e in d["etapes"]] == ["heuristique", "apres_vnd", "finale"]
     assert "palettes" in d["etapes"][0] and "palettes" in d["etapes"][1] and "palettes" not in d["etapes"][-1]
@@ -283,8 +287,9 @@ def test_resultat_json_avec_etapes():
     assert "hauteur_globale" in d["bilan"]
 
 
+@pytest.mark.parametrize("regles", [{}, REGLES_PROJET], ids=["notebook", "projet"])
 @pytest.mark.parametrize("graine", [0, 1, 2, 3])
-def test_pipeline_aleatoire_toujours_valide(graine):
+def test_pipeline_aleatoire_toujours_valide(graine, regles):
     import random
     rng = random.Random(graine)
     lot = []
@@ -293,7 +298,7 @@ def test_pipeline_aleatoire_toujours_valide(graine):
                          emballage=rng.choice(["", "bois", "carton", "fibre"]),
                          classe=rng.choice(["", "", "", "3", "1", "5.1", "2.2", "8", "9L", "ARME", "SECU"]),
                          fragile=rng.random() < 0.06))
-    res = opt.optimiser(lot, Parametres(moteur="heuristique", duree_recherche=1.0, graine=graine))
+    res = opt.optimiser(lot, Parametres(moteur="heuristique", temps_limite=1.0, graine=graine, **regles))
     assert not res.non_places
     assert [m for m in verifier(res) if m.niveau == "erreur"] == []
     for e in res.etapes:     # chaque état intermédiaire est lui aussi valide

@@ -204,8 +204,7 @@ def test_table_des_emballages():
     assert e.code_depuis_texte("Caisse en bois") == "bois"
     assert e.code_depuis_texte("Carton ondulé") == "carton"
     assert e.code_depuis_texte("inconnu") == ""
-    assert e.ecrasable("carton") and e.ecrasable("fibre") and not e.ecrasable("bois") and not e.ecrasable("")
-    assert sorted(e.codes_ecrasables()) == ["carton", "fibre"]
+    assert not hasattr(e, "ecrasable")                 # la matière est une information : aucune règle ne s'y appuie
 
 
 def test_un_classeur_envoye_a_l_import_texte_donne_un_message_clair():

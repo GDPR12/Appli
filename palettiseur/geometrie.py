@@ -134,16 +134,13 @@ def iata_en_regle(p: Placement, autres: list[Placement], etendue: float, params:
 def plafond_charge(colis: Colis, params: Parametres) -> float:
     """Masse maximale (kg) d'un colis posé directement sur ``colis``.
 
-    Trois règles se combinent : un colis ne porte pas plus lourd que lui (``facteur_masse``), rien sur un colis
-    fragile, et un colis dans une matière à ne pas écraser (carton, fibre…) ne porte que ``charge_max_carton`` kg
-    (0 : rien).
+    Deux règles propres à l'application : rien sur un colis fragile, et (si ``facteur_masse`` > 0) un colis ne porte
+    pas plus lourd que lui multiplié par ce facteur. La matière de l'emballage n'intervient pas : le notebook ne la
+    connaît pas.
     """
     if colis.fragile:
         return 0.0
-    plafond = params.facteur_masse * colis.masse
-    if params.emballage_ecrasable(colis.emballage):
-        plafond = min(plafond, params.charge_max_carton)
-    return plafond
+    return params.plafond_relatif(colis.masse)
 
 
 def tient_dans(colis: Colis, largeur: float, longueur: float, hauteur: float) -> bool:

@@ -1,16 +1,14 @@
 {
-  "_description": "Matières d'emballage reconnues. « ecrasable » donne la valeur par défaut du réglage « ne pas écraser » (modifiable dans les paramètres de l'application) : un colis dans une matière écrasable ne porte que la charge maximale réglée (0 kg par défaut = rien dessus). « mots_cles » sert à reconnaître la colonne « Type of Packing » du manifeste Excel (comparaison sans accents ni casse, mot entier). Fichier éditable.",
+  "_description": "Matières d'emballage reconnues, à titre d'information : elles ne changent pas le placement des colis (le notebook ne les connaît pas). « mots_cles » sert à reconnaître la colonne « Type of Packing » du manifeste Excel (comparaison sans accents ni casse, mot entier). Fichier éditable.",
   "matieres": [
     {
       "code": "",
       "libelle": "Non précisée",
-      "ecrasable": false,
       "mots_cles": []
     },
     {
       "code": "carton",
       "libelle": "Carton",
-      "ecrasable": true,
       "mots_cles": [
         "CARDBOARD",
         "CARTON",
@@ -21,7 +19,6 @@
     {
       "code": "fibre",
       "libelle": "Fibre (« fibreboard », carton compact)",
-      "ecrasable": true,
       "mots_cles": [
         "FIBREBOARD",
         "FIBERBOARD",
@@ -32,7 +29,6 @@
     {
       "code": "bois",
       "libelle": "Bois",
-      "ecrasable": false,
       "mots_cles": [
         "WOOD",
         "WOODEN",
@@ -42,7 +38,6 @@
     {
       "code": "metal",
       "libelle": "Acier / métal",
-      "ecrasable": false,
       "mots_cles": [
         "STEEL",
         "METAL",
@@ -54,7 +49,6 @@
     {
       "code": "plastique",
       "libelle": "Plastique",
-      "ecrasable": false,
       "mots_cles": [
         "PLASTIC",
         "PLASTIQUE"
@@ -63,7 +57,6 @@
     {
       "code": "composite",
       "libelle": "Composite",
-      "ecrasable": false,
       "mots_cles": [
         "COMPOSITE"
       ]
@@ -71,7 +64,6 @@
     {
       "code": "palette",
       "libelle": "Palette",
-      "ecrasable": false,
       "mots_cles": [
         "PALLET",
         "PALETTE",

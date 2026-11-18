@@ -13,7 +13,8 @@ Pour chaque ligne :
   (regroupement par DAT du notebook CDP_5) ;
 - **classe** : la classe IATA de ``Class/Div`` ; à défaut, ``ARME`` (catégorie A du notebook, ``WEAPONS``) ou ``SECU``
   (catégorie B, ``WEAPONRY SECURITY PARTS``) reconnus dans la désignation (règles de ``data/import_cargo.json``) ;
-- **emballage** : la matière déduite de ``Type of Packing`` (carton, bois…), pour ne pas écraser les cartons ;
+- **emballage** : la matière déduite de ``Type of Packing`` (carton, bois…), conservée à titre d'information : elle ne
+  change pas le placement des colis ;
 - **fragile** : jamais déduit du fichier (à cocher ensuite dans la liste) ;
 - **sens** : la hauteur reste toujours verticale (le manifeste n'indique pas de notion de renversement).
 """
@@ -23,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections import Counter
 from pathlib import Path
 
 from .emballages import emballages
@@ -226,8 +228,7 @@ def lire_manifeste(contenu: bytes) -> dict:
         "armes": sum(1 for c in colis if c["classe"] == "ARME"),
         "pieces_securite": sum(1 for c in colis if c["classe"] == "SECU"),
         "dangereux": sum(1 for c in colis if c["classe"] and c["classe"] not in ("ARME", "SECU")),
-        "carton": sum(1 for c in colis if c["emballage"] == "carton"),
-        "fibre": sum(1 for c in colis if c["emballage"] == "fibre"),
+        "emballages": {code: n for code, n in sorted(Counter(c["emballage"] for c in colis if c["emballage"]).items())},
         "dat": len({c["dat"] for c in colis if c["dat"]}),
         "lignes_ignorees": sum(1 for a in avertissements if "ignorée" in a),
     }
