@@ -300,3 +300,8 @@ svg.plan-soute.compact .legende-plan { font-size: 20px; }
 svg.plan-soute.compact .emplacement.indisponible .croix { stroke-width: 5; }
 .panneau-qualite.reduit .table-defilante, .panneau-qualite.reduit #qualite-legende, .panneau-qualite.reduit #qualite-etapes { display: none; }
 .bouton-reduire { margin-left: auto; }
+
+/* Colonne du centre : les barres du haut ne s'écrasent jamais ; la vue 3D et le tableau de qualité se partagent le reste */
+.centre > .onglets, .centre > .barre-etapes, .centre > .barre-vue, .centre > .legende { flex-shrink: 0; }
+.centre > #vue3d { min-height: 160px; }
+.centre > .panneau-qualite { flex-shrink: 1; min-height: 60px; max-height: 100%; }

@@ -13,7 +13,7 @@ const MIN_COLONNE = { g: 300, d: 280 };
 const MIN_CENTRE = 380;
 const MIN_BLOC = 70;
 const MIN_RESTE_BLOC = 150;      // hauteur laissée au bloc qui suit un séparateur (colonnes de gauche et de droite)
-const MIN_VUE_3D = 320;          // hauteur laissée à la vue 3D quand on agrandit le panneau du bas
+const MIN_VUE_3D = 200;          // hauteur laissée à la vue 3D quand on agrandit le panneau du bas
 const PAS_CLAVIER = 24;
 
 function lireMemoire() {
@@ -63,7 +63,11 @@ export function initialiserSeparateurs() {
   function maxiHauteur(bloc, apres) {
     const parent = bloc.parentElement;
     if (!parent) return 2000;
-    if (apres) return Math.max(MIN_BLOC, parent.clientHeight - MIN_VUE_3D);                // panneau du bas du centre
+    if (apres) {                                                                           // panneau du bas du centre
+      const autres = [...parent.children].filter((e) => e !== bloc && e.id !== 'vue3d' && !e.hidden)
+        .reduce((somme, e) => somme + e.getBoundingClientRect().height, 0);
+      return Math.max(MIN_BLOC, parent.clientHeight - autres - MIN_VUE_3D);
+    }
     if (parent.classList.contains('panneau') && parent.classList.contains('gauche')) {
       return Math.max(MIN_BLOC, parent.clientHeight - MIN_RESTE_BLOC - 10);
     }
@@ -71,7 +75,7 @@ export function initialiserSeparateurs() {
   }
   function fixerHauteur(bloc, valeur, memoriser = true, apres = false) {
     const h = Math.round(Math.max(MIN_BLOC, Math.min(maxiHauteur(bloc, apres), valeur)));
-    bloc.style.flex = `0 0 ${h}px`;
+    bloc.style.flex = apres ? `0 1 ${h}px` : `0 0 ${h}px`;      // le panneau du bas peut rétrécir si la fenêtre diminue
     bloc.style.height = `${h}px`;
     bloc.style.minHeight = '0';
     bloc.style.overflow = 'auto';
